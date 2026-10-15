@@ -44,12 +44,6 @@ void timer_handler(void) {
 
     system_ticks++;
     sched_tick();
-
-    /* Heartbeat every 100 ticks (1 second) */
-    if (system_ticks % 100 == 0) {
-        kprintf("[TICK] System Uptime: %u sec (%lu ticks)\n",
-                (unsigned int)(system_ticks / 100), system_ticks);
-    }
 }
 
 uint64_t timer_get_ticks(void) {
