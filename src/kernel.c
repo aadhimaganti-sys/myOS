@@ -172,9 +172,8 @@ void kernel_main(void) {
     kprintf("[*] Kernel Main yielding to background tasks...\n");
 
     /* Let worker tasks run and demonstrate round-robin preemptive multitasking */
-    for (int i = 0; i < 8; i++) {
+    for (int i = 0; i < 6; i++) {
         task_yield();
-        timer_sleep_ms(40);
     }
 
     kprintf("\n====================================================================\n");
