@@ -23,6 +23,8 @@ void *kmalloc(size_t size);
 void kfree(void *ptr);
 void *kzalloc(size_t size);
 void *krealloc(void *ptr, size_t new_size);
+uint64_t mm_get_heap_total_bytes(void);
+uint64_t mm_get_heap_used_bytes(void);
 void mm_dump_stats(void);
 
 #endif /* _MM_H */

@@ -306,6 +306,14 @@ void mm_dump_stats(void) {
     kprintf("  Heap Active Usage:    %lu bytes\n", heap_total_used_bytes);
 }
 
+uint64_t mm_get_heap_total_bytes(void) {
+    return (uint64_t)heap_total_allocated_bytes;
+}
+
+uint64_t mm_get_heap_used_bytes(void) {
+    return (uint64_t)heap_total_used_bytes;
+}
+
 void mm_init(void) {
     /* Align page allocation base to 4KB boundary above __heap_start */
     uintptr_t raw_heap = (uintptr_t)__heap_start;

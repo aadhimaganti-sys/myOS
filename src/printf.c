@@ -1,6 +1,7 @@
 #include "printf.h"
 #include "uart.h"
 #include "string.h"
+#include "gui.h"
 
 struct buffer_ctx {
     char *buf;
@@ -19,6 +20,7 @@ static void emit_buf(char c, void *user_data) {
 static void emit_uart(char c, void *user_data) {
     (void)user_data;
     uart_putc(c);
+    gui_terminal_putc(c);
 }
 
 typedef void (*emit_fn)(char c, void *user_data);

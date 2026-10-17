@@ -58,6 +58,7 @@ void task_exit(void);
 struct task *get_current_task(void);
 void sched_tick(void);
 int sched_should_preempt(void);
+int sched_get_active_task_count(void);
 void sched_dump_tasks(void);
 
 #endif /* _SCHED_H */

@@ -60,5 +60,6 @@ void handle_sync_exception(struct trap_frame *tf);
 void handle_irq(struct trap_frame *tf);
 void handle_fiq(struct trap_frame *tf);
 void handle_serror(struct trap_frame *tf);
+uint64_t irq_get_count(void);
 
 #endif /* _IRQ_H */

@@ -221,6 +221,16 @@ int sched_should_preempt(void) {
     return (sched_initialized && preempt_requested && count_ready_tasks() > 0);
 }
 
+int sched_get_active_task_count(void) {
+    int count = 0;
+    for (int i = 0; i < MAX_TASKS; i++) {
+        if (task_table[i].state != TASK_UNUSED && task_table[i].state != TASK_DEAD) {
+            count++;
+        }
+    }
+    return count;
+}
+
 void sched_dump_tasks(void) {
     static const char *state_names[] = {
         "UNUSED", "READY", "RUNNING", "SLEEPING", "DEAD"

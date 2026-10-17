@@ -30,13 +30,24 @@ void ramfs_init(void) {
         "Heap Pool:     64 MB Dynamic Heap\n"
         "Timer:         Generic Physical Timer (10ms tick / 100 Hz)\n";
 
+    const char *report_content =
+        "# Google Antigravity Desktop OS Report\n"
+        "- Architecture: AArch64 Bare-Metal virt\n"
+        "- GUI Desktop: 640x480 32bpp active\n"
+        "- Multi-Agent: Orchestrator & subagents\n"
+        "- Storage: RAMFS read/write file system\n"
+        "- Verification: ONLINE and operational\n";
+
     ramfs_create("readme.txt");
     ramfs_write("readme.txt", readme_content, strlen(readme_content));
+
+    ramfs_create("report.md");
+    ramfs_write("report.md", report_content, strlen(report_content));
 
     ramfs_create("sysinfo.txt");
     ramfs_write("sysinfo.txt", sysinfo_content, strlen(sysinfo_content));
 
-    kprintf("[+] RAMFS initialized (pre-populated 'readme.txt' and 'sysinfo.txt')\n");
+    kprintf("[+] RAMFS initialized (pre-populated 'readme.txt', 'report.md', 'sysinfo.txt')\n");
 }
 
 struct ramfs_file *ramfs_find(const char *name) {
@@ -127,4 +138,13 @@ void ramfs_list(void) {
     kprintf("  -----------------------------------------\n");
     kprintf("  Total: %d file(s), %lu bytes used (%lu max per file)\n\n",
             count, total_size, (size_t)RAMFS_MAX_SIZE);
+}
+
+int ramfs_get_total_files(void) {
+    return RAMFS_MAX_FILES;
+}
+
+struct ramfs_file *ramfs_get_file_by_index(int idx) {
+    if (idx < 0 || idx >= RAMFS_MAX_FILES) return NULL;
+    return &files[idx];
 }

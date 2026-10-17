@@ -35,6 +35,23 @@ clean:
 	rm -f src/*.o $(TARGET) $(BINARY)
 
 run: $(TARGET)
-	qemu-system-aarch64 -M virt -cpu cortex-a57 -nographic -smp 1 -m 128M -kernel $(TARGET)
+	@if [ -n "$$DISPLAY" ] && xset q >/dev/null 2>&1; then \
+		echo "[*] Starting QEMU with graphical window..."; \
+		qemu-system-aarch64 -M virt -cpu cortex-a57 -m 128M -serial mon:stdio -device ramfb -device virtio-keyboard-device -device virtio-tablet-device -kernel $(TARGET); \
+	else \
+		echo "[*] No graphical display detected. Starting QEMU with VNC (:0 on port 5900) & Terminal console..."; \
+		echo "[*] Connect any VNC viewer to localhost:5900 to see the graphical desktop!"; \
+		qemu-system-aarch64 -M virt -cpu cortex-a57 -m 128M -serial mon:stdio -display vnc=:0 -device ramfb -device virtio-keyboard-device -device virtio-tablet-device -kernel $(TARGET); \
+	fi
 
-.PHONY: all clean run
+run-gui: $(TARGET)
+	qemu-system-aarch64 -M virt -cpu cortex-a57 -m 128M -serial mon:stdio -device ramfb -device virtio-keyboard-device -device virtio-tablet-device -kernel $(TARGET)
+
+run-vnc: $(TARGET)
+	qemu-system-aarch64 -M virt -cpu cortex-a57 -m 128M -serial mon:stdio -display vnc=:0 -device ramfb -device virtio-keyboard-device -device virtio-tablet-device -kernel $(TARGET)
+
+run-headless: $(TARGET)
+	qemu-system-aarch64 -M virt -cpu cortex-a57 -m 128M -nographic -device ramfb -device virtio-keyboard-device -device virtio-tablet-device -kernel $(TARGET)
+
+.PHONY: all clean run run-gui run-vnc run-headless
+

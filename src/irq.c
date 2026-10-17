@@ -95,6 +95,8 @@ void handle_sync_exception(struct trap_frame *tf) {
     }
 }
 
+static volatile uint64_t irq_total_count = 0;
+
 void handle_irq(struct trap_frame *tf) {
     (void)tf;
     uint32_t iar = GICC_REG(GICC_IAR);
@@ -104,6 +106,8 @@ void handle_irq(struct trap_frame *tf) {
         /* Spurious interrupt */
         return;
     }
+
+    irq_total_count++;
 
     if (intid == IRQ_TIMER_PHYS) {
         timer_handler();
@@ -118,6 +122,10 @@ void handle_irq(struct trap_frame *tf) {
     if (sched_should_preempt()) {
         schedule();
     }
+}
+
+uint64_t irq_get_count(void) {
+    return irq_total_count;
 }
 
 void handle_fiq(struct trap_frame *tf) {

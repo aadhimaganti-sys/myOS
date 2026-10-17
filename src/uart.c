@@ -1,4 +1,5 @@
 #include "uart.h"
+#include "gui.h"
 
 #define REG(offset) (*(volatile uint32_t *)(UART0_BASE + (offset)))
 
@@ -60,6 +61,8 @@ void uart_init(void) {
 }
 
 void uart_putc(char c) {
+    gui_terminal_putc(c);
+
     if (c == '\n') {
         /* Wait until transmit FIFO is not full */
         while (UART_FR & FR_TXFF) {
@@ -74,8 +77,9 @@ void uart_putc(char c) {
 }
 
 char uart_getc(void) {
-    /* Wait until receive FIFO is not empty */
+    /* Wait until receive FIFO is not empty while refreshing GUI */
     while (UART_FR & FR_RXFE) {
+        gui_refresh();
         __asm__ volatile("wfe");
     }
     return (char)(UART_DR & 0xFF);

@@ -22,5 +22,7 @@ int  ramfs_read(const char *name, char *buf, size_t buf_size);
 int  ramfs_delete(const char *name);
 void ramfs_list(void);
 struct ramfs_file *ramfs_find(const char *name);
+int ramfs_get_total_files(void);
+struct ramfs_file *ramfs_get_file_by_index(int idx);
 
 #endif /* _RAMFS_H */

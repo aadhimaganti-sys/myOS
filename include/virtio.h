@@ -40,6 +40,7 @@
 #define VIRTIO_DEV_BLOCK                2
 #define VIRTIO_DEV_CONSOLE              3
 #define VIRTIO_DEV_GPU                  16
+#define VIRTIO_DEV_INPUT                18
 
 /* Device Status Bits */
 #define VIRTIO_STATUS_ACKNOWLEDGE       1

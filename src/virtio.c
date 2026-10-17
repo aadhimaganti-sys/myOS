@@ -1,4 +1,5 @@
 #include "virtio.h"
+#include "input.h"
 #include "printf.h"
 #include "string.h"
 #include "mm.h"
@@ -101,6 +102,8 @@ static int init_virtio_block_hw(uintptr_t base) {
 }
 
 void virtio_init(void) {
+    input_init();
+
     kprintf("--- Probing VirtIO MMIO Transports (0x%08llx - 0x%08llx) ---\n",
             VIRTIO_MMIO_BASE, VIRTIO_MMIO_BASE + (VIRTIO_MMIO_COUNT * VIRTIO_MMIO_SIZE));
 
@@ -139,6 +142,9 @@ void virtio_init(void) {
             kprintf("(VirtIO Serial Console)\n");
         } else if (device_id == VIRTIO_DEV_NET) {
             kprintf("(VirtIO Network Interface)\n");
+        } else if (device_id == VIRTIO_DEV_INPUT) {
+            kprintf("(VirtIO Input Device)\n");
+            input_register_device(base);
         } else {
             kprintf("(Generic/Unknown VirtIO Device)\n");
         }

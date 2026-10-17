@@ -12,6 +12,9 @@
 #include "ramfs.h"
 #include "syscall.h"
 #include "shell.h"
+#include "agy.h"
+#include "gui.h"
+#include "keyboard.h"
 
 static void worker_thread_alpha(void) {
     kprintf("[Task:Alpha] Worker Thread Alpha started (PID: %u)\n", get_current_task()->pid);
@@ -183,7 +186,15 @@ void kernel_main(void) {
     /* 1. Initialize In-Memory RAM Filesystem (RAMFS) */
     ramfs_init();
 
-    /* 2. Initialize and Launch Interactive CLI Shell */
+    /* 2. Initialize Google Antigravity Multi-Agent Subsystem */
+    agy_init();
+
+    /* 3. Initialize Unified Keyboard Driver & GUI Subsystem */
+    keyboard_init();
+    gui_init();
+    gui_render_desktop();
+
+    /* 4. Initialize and Launch Interactive CLI Shell */
     shell_init();
 
     kprintf("\n[SUCCESS] Operating System Fully Booted and Operational!\n");
