@@ -20,6 +20,9 @@
 #define VIRTIO_MMIO_QUEUE_SEL           0x030
 #define VIRTIO_MMIO_QUEUE_NUM_MAX       0x034
 #define VIRTIO_MMIO_QUEUE_NUM           0x038
+#define VIRTIO_MMIO_GUEST_PAGE_SIZE     0x028
+#define VIRTIO_MMIO_QUEUE_ALIGN         0x03c
+#define VIRTIO_MMIO_QUEUE_PFN           0x040
 #define VIRTIO_MMIO_QUEUE_READY         0x044
 #define VIRTIO_MMIO_QUEUE_NOTIFY        0x050
 #define VIRTIO_MMIO_INTERRUPT_STATUS    0x060
@@ -48,6 +51,23 @@
 #define VIRTIO_STATUS_DRIVER_OK         4
 #define VIRTIO_STATUS_FEATURES_OK       8
 #define VIRTIO_STATUS_FAILED            128
+
+/* VirtIO Input Configuration Selectors */
+#define VIRTIO_INPUT_CFG_UNSET          0x00
+#define VIRTIO_INPUT_CFG_ID_NAME        0x01
+#define VIRTIO_INPUT_CFG_ID_SERIAL      0x02
+#define VIRTIO_INPUT_CFG_ID_DEVIDS      0x03
+#define VIRTIO_INPUT_CFG_PROP_BITS      0x10
+#define VIRTIO_INPUT_CFG_EV_BITS        0x11
+#define VIRTIO_INPUT_CFG_ABS_INFO       0x12
+
+struct virtio_input_absinfo {
+    uint32_t min;
+    uint32_t max;
+    uint32_t fuzz;
+    uint32_t flat;
+    uint32_t res;
+} __attribute__((packed));
 
 /* Virtqueue Descriptor Flags */
 #define VRING_DESC_F_NEXT               1

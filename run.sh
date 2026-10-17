@@ -21,6 +21,8 @@ if [ -n "$DISPLAY" ] && xset q >/dev/null 2>&1; then
         -device ramfb \
         -device virtio-keyboard-device \
         -device virtio-tablet-device \
+        -drive file=disk.img,if=none,format=raw,id=hd0 \
+        -device virtio-blk-device,drive=hd0 \
         -kernel kernel8.elf
 else
     echo "[*] No active graphical X11/Wayland display server detected."
@@ -36,5 +38,7 @@ else
         -device ramfb \
         -device virtio-keyboard-device \
         -device virtio-tablet-device \
+        -drive file=disk.img,if=none,format=raw,id=hd0 \
+        -device virtio-blk-device,drive=hd0 \
         -kernel kernel8.elf
 fi

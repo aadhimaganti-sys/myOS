@@ -61,8 +61,6 @@ void uart_init(void) {
 }
 
 void uart_putc(char c) {
-    gui_terminal_putc(c);
-
     if (c == '\n') {
         /* Wait until transmit FIFO is not full */
         while (UART_FR & FR_TXFF) {

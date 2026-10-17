@@ -10,8 +10,12 @@
 #endif
 
 /* VirtIO Input Configuration Selectors */
+#ifndef VIRTIO_INPUT_CFG_UNSET
 #define VIRTIO_INPUT_CFG_UNSET   0
+#endif
+#ifndef VIRTIO_INPUT_CFG_ID_NAME
 #define VIRTIO_INPUT_CFG_ID_NAME 1
+#endif
 
 /* Linux Event Types */
 #define EV_SYN 0x00
@@ -99,6 +103,9 @@
 #define BTN_LEFT       0x110
 #define BTN_RIGHT      0x111
 #define BTN_MIDDLE     0x112
+#define BTN_SIDE       0x113
+#define BTN_EXTRA      0x114
+#define BTN_TOUCH      0x14a
 
 /* Absolute Axis Codes */
 #define ABS_X          0x00
@@ -107,6 +114,8 @@
 /* Relative Axis Codes */
 #define REL_X          0x00
 #define REL_Y          0x01
+#define REL_HWHEEL     0x06
+#define REL_WHEEL      0x08
 
 /* VirtIO Input Event Structure */
 struct virtio_input_event {
@@ -120,6 +129,11 @@ void input_init(void);
 void input_register_device(uintptr_t base);
 void input_poll(void);
 int  input_get_mouse(int *x, int *y, int *buttons);
+int  input_get_mouse_wheel(void);
+int  input_get_mouse_state(int *x, int *y, int *buttons, int *wheel);
+uintptr_t input_get_mouse_base(void);
+int  input_mouse_self_test(void);
+uintptr_t input_get_keyboard_base(void);
 int  input_getc_nonblock(char *c);
 int  input_get_key_event(struct virtio_input_event *ev);
 

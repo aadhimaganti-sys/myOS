@@ -3,3 +3,5 @@ kernel8.elf
 kernel8.img
 __pycache__
 .venv
+disk.img
+atlas/

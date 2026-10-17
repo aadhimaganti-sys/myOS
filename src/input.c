@@ -21,6 +21,11 @@ struct virtio_input_dev {
     struct vring_used *used_ring;
     struct virtio_input_event *events;
     uint16_t last_used_idx;
+    int is_pointer;
+    uint32_t abs_min_x;
+    uint32_t abs_max_x;
+    uint32_t abs_min_y;
+    uint32_t abs_max_y;
 };
 
 static struct virtio_input_dev input_devices[MAX_INPUT_DEVICES];
@@ -31,6 +36,8 @@ static int input_subsystem_initialized = 0;
 static int mouse_x = 320;
 static int mouse_y = 240;
 static int mouse_buttons = 0;
+static int mouse_wheel = 0;
+static uintptr_t mouse_dev_base = 0;
 
 /* Keyboard state */
 static int shift_state = 0;
@@ -123,6 +130,8 @@ void input_init(void) {
     mouse_x = 320;
     mouse_y = 240;
     mouse_buttons = 0;
+    mouse_wheel = 0;
+    mouse_dev_base = 0;
     shift_state = 0;
     kbd_head = 0;
     kbd_tail = 0;
@@ -217,17 +226,24 @@ void input_register_device(uintptr_t base) {
     uintptr_t events_addr = (used_addr + sizeof(struct vring_used) + 63) & ~63ULL;
     struct virtio_input_event *events = (struct virtio_input_event *)events_addr;
 
-    /* Program queue physical addresses into MMIO registers */
-    VIRTIO_REG(base, VIRTIO_MMIO_QUEUE_DESC_LOW) = (uint32_t)((uint64_t)desc);
-    VIRTIO_REG(base, VIRTIO_MMIO_QUEUE_DESC_HIGH) = (uint32_t)(((uint64_t)desc) >> 32);
+    /* Program queue physical addresses into MMIO registers depending on VirtIO version */
+    uint32_t version = VIRTIO_REG(base, VIRTIO_MMIO_VERSION);
+    if (version == 1) {
+        VIRTIO_REG(base, VIRTIO_MMIO_GUEST_PAGE_SIZE) = 4096;
+        VIRTIO_REG(base, VIRTIO_MMIO_QUEUE_ALIGN) = 64;
+        VIRTIO_REG(base, VIRTIO_MMIO_QUEUE_PFN) = (uint32_t)(((uint64_t)queue_mem) >> 12);
+    } else {
+        VIRTIO_REG(base, VIRTIO_MMIO_QUEUE_DESC_LOW) = (uint32_t)((uint64_t)desc);
+        VIRTIO_REG(base, VIRTIO_MMIO_QUEUE_DESC_HIGH) = (uint32_t)(((uint64_t)desc) >> 32);
 
-    VIRTIO_REG(base, VIRTIO_MMIO_QUEUE_DRIVER_LOW) = (uint32_t)((uint64_t)avail);
-    VIRTIO_REG(base, VIRTIO_MMIO_QUEUE_DRIVER_HIGH) = (uint32_t)(((uint64_t)avail) >> 32);
+        VIRTIO_REG(base, VIRTIO_MMIO_QUEUE_DRIVER_LOW) = (uint32_t)((uint64_t)avail);
+        VIRTIO_REG(base, VIRTIO_MMIO_QUEUE_DRIVER_HIGH) = (uint32_t)(((uint64_t)avail) >> 32);
 
-    VIRTIO_REG(base, VIRTIO_MMIO_QUEUE_DEVICE_LOW) = (uint32_t)((uint64_t)used);
-    VIRTIO_REG(base, VIRTIO_MMIO_QUEUE_DEVICE_HIGH) = (uint32_t)(((uint64_t)used) >> 32);
+        VIRTIO_REG(base, VIRTIO_MMIO_QUEUE_DEVICE_LOW) = (uint32_t)((uint64_t)used);
+        VIRTIO_REG(base, VIRTIO_MMIO_QUEUE_DEVICE_HIGH) = (uint32_t)(((uint64_t)used) >> 32);
 
-    VIRTIO_REG(base, VIRTIO_MMIO_QUEUE_READY) = 1;
+        VIRTIO_REG(base, VIRTIO_MMIO_QUEUE_READY) = 1;
+    }
 
     /* Pre-populate Queue 0 with 16 event buffers (VRING_DESC_F_WRITE), add to avail_ring, notify queue */
     for (uint32_t i = 0; i < qnum; i++) {
@@ -248,6 +264,41 @@ void input_register_device(uintptr_t base) {
     /* 7. Set DRIVER_OK */
     VIRTIO_REG(base, VIRTIO_MMIO_STATUS) |= VIRTIO_STATUS_DRIVER_OK;
 
+    /* Query ABS_INFO if tablet/touch absolute pointer */
+    uint32_t min_x = 0, max_x = 32767;
+    uint32_t min_y = 0, max_y = 32767;
+
+    *(volatile uint8_t *)(base + VIRTIO_MMIO_CONFIG) = VIRTIO_INPUT_CFG_ABS_INFO;
+    *(volatile uint8_t *)(base + VIRTIO_MMIO_CONFIG + 1) = ABS_X;
+    __asm__ volatile("dmb sy" ::: "memory");
+    if (*(volatile uint8_t *)(base + VIRTIO_MMIO_CONFIG + 2) >= sizeof(struct virtio_input_absinfo)) {
+        volatile struct virtio_input_absinfo *info = (volatile struct virtio_input_absinfo *)(base + VIRTIO_MMIO_CONFIG + 8);
+        if (info->max > info->min) {
+            min_x = info->min;
+            max_x = info->max;
+        }
+    }
+
+    *(volatile uint8_t *)(base + VIRTIO_MMIO_CONFIG) = VIRTIO_INPUT_CFG_ABS_INFO;
+    *(volatile uint8_t *)(base + VIRTIO_MMIO_CONFIG + 1) = ABS_Y;
+    __asm__ volatile("dmb sy" ::: "memory");
+    if (*(volatile uint8_t *)(base + VIRTIO_MMIO_CONFIG + 2) >= sizeof(struct virtio_input_absinfo)) {
+        volatile struct virtio_input_absinfo *info = (volatile struct virtio_input_absinfo *)(base + VIRTIO_MMIO_CONFIG + 8);
+        if (info->max > info->min) {
+            min_y = info->min;
+            max_y = info->max;
+        }
+    }
+
+    int is_ptr = (strstr(name_buf, "Tablet") != NULL ||
+                  strstr(name_buf, "tablet") != NULL ||
+                  strstr(name_buf, "Mouse") != NULL ||
+                  strstr(name_buf, "mouse") != NULL ||
+                  strstr(name_buf, "Pointer") != NULL);
+    if (is_ptr || mouse_dev_base == 0) {
+        mouse_dev_base = base;
+    }
+
     /* Store device registration */
     struct virtio_input_dev *dev = &input_devices[num_input_devices];
     dev->base = base;
@@ -258,6 +309,11 @@ void input_register_device(uintptr_t base) {
     dev->used_ring = used;
     dev->events = events;
     dev->last_used_idx = 0;
+    dev->is_pointer = is_ptr;
+    dev->abs_min_x = min_x;
+    dev->abs_max_x = max_x;
+    dev->abs_min_y = min_y;
+    dev->abs_max_y = max_y;
     dev->active = 1;
     num_input_devices++;
 }
@@ -281,12 +337,18 @@ void input_poll(void) {
 
                 if (ev.type == EV_ABS) {
                     if (ev.code == ABS_X) {
-                        int val = (int)(((uint64_t)ev.value * 640ULL) / 32768ULL);
+                        uint64_t span_x = (dev->abs_max_x > dev->abs_min_x) ? (dev->abs_max_x - dev->abs_min_x) : 32767ULL;
+                        int64_t raw_rel = (int64_t)ev.value - (int64_t)dev->abs_min_x;
+                        if (raw_rel < 0) raw_rel = 0;
+                        int val = (int)((raw_rel * 640ULL) / span_x);
                         if (val < 0) val = 0;
                         if (val > 639) val = 639;
                         mouse_x = val;
                     } else if (ev.code == ABS_Y) {
-                        int val = (int)(((uint64_t)ev.value * 480ULL) / 32768ULL);
+                        uint64_t span_y = (dev->abs_max_y > dev->abs_min_y) ? (dev->abs_max_y - dev->abs_min_y) : 32767ULL;
+                        int64_t raw_rel = (int64_t)ev.value - (int64_t)dev->abs_min_y;
+                        if (raw_rel < 0) raw_rel = 0;
+                        int val = (int)((raw_rel * 480ULL) / span_y);
                         if (val < 0) val = 0;
                         if (val > 479) val = 479;
                         mouse_y = val;
@@ -300,9 +362,11 @@ void input_poll(void) {
                         mouse_y += (int32_t)ev.value;
                         if (mouse_y < 0) mouse_y = 0;
                         if (mouse_y > 479) mouse_y = 479;
+                    } else if (ev.code == REL_WHEEL) {
+                        mouse_wheel += (int32_t)ev.value;
                     }
                 } else if (ev.type == EV_KEY) {
-                    if (ev.code == BTN_LEFT) {
+                    if (ev.code == BTN_LEFT || ev.code == BTN_TOUCH) {
                         if (ev.value) {
                             mouse_buttons |= (1 << 0);
                         } else {
@@ -314,7 +378,25 @@ void input_poll(void) {
                         } else {
                             mouse_buttons &= ~(1 << 1);
                         }
-                    } else if (ev.code < BTN_LEFT) {
+                    } else if (ev.code == BTN_MIDDLE) {
+                        if (ev.value) {
+                            mouse_buttons |= (1 << 2);
+                        } else {
+                            mouse_buttons &= ~(1 << 2);
+                        }
+                    } else if (ev.code == BTN_SIDE) {
+                        if (ev.value) {
+                            mouse_buttons |= (1 << 3);
+                        } else {
+                            mouse_buttons &= ~(1 << 3);
+                        }
+                    } else if (ev.code == BTN_EXTRA) {
+                        if (ev.value) {
+                            mouse_buttons |= (1 << 4);
+                        } else {
+                            mouse_buttons &= ~(1 << 4);
+                        }
+                    } else if (ev.code < 0x100) {
                         /* Push raw key event (preserves scancode, value, modifiers) */
                         raw_event_push(&ev);
 
@@ -367,6 +449,49 @@ int input_get_mouse(int *x, int *y, int *buttons) {
     if (y) *y = mouse_y;
     if (buttons) *buttons = mouse_buttons;
     return 1;
+}
+
+int input_get_mouse_wheel(void) {
+    return mouse_wheel;
+}
+
+int input_get_mouse_state(int *x, int *y, int *buttons, int *wheel) {
+    input_poll();
+    if (x) *x = mouse_x;
+    if (y) *y = mouse_y;
+    if (buttons) *buttons = mouse_buttons;
+    if (wheel) *wheel = mouse_wheel;
+    return 1;
+}
+
+uintptr_t input_get_mouse_base(void) {
+    return mouse_dev_base ? mouse_dev_base : 0x0a003a00ULL;
+}
+
+uintptr_t input_get_keyboard_base(void) {
+    for (int i = 0; i < num_input_devices; i++) {
+        if (input_devices[i].active && !input_devices[i].is_pointer) {
+            return input_devices[i].base;
+        }
+    }
+    return 0x0a003c00ULL;
+}
+
+int input_mouse_self_test(void) {
+    uintptr_t base = input_get_mouse_base();
+    if (!base) return -1;
+
+    uint32_t magic = VIRTIO_REG(base, VIRTIO_MMIO_MAGIC_VALUE);
+    if (magic != VIRTIO_MAGIC) {
+        return -2;
+    }
+
+    uint32_t status = VIRTIO_REG(base, VIRTIO_MMIO_STATUS);
+    if (!(status & VIRTIO_STATUS_DRIVER_OK)) {
+        return -3;
+    }
+
+    return 0;
 }
 
 int input_getc_nonblock(char *c) {

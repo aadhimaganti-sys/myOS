@@ -15,6 +15,8 @@
 #include "agy.h"
 #include "gui.h"
 #include "keyboard.h"
+#include "coin.h"
+#include "p2p.h"
 
 static void worker_thread_alpha(void) {
     kprintf("[Task:Alpha] Worker Thread Alpha started (PID: %u)\n", get_current_task()->pid);
@@ -194,11 +196,19 @@ void kernel_main(void) {
     gui_init();
     gui_render_desktop();
 
-    /* 4. Initialize and Launch Interactive CLI Shell */
+    /* 4. Initialize KitKoin (KIT) Cryptocurrency & P2P Protocol */
+    coin_init();
+    p2p_init();
+
+    /* 5. Initialize and Launch Interactive CLI Shell */
     shell_init();
 
     kprintf("\n[SUCCESS] Operating System Fully Booted and Operational!\n");
-    kprintf("Entering interactive shell...\n");
+    kprintf("Entering Graphical Desktop Environment (myOS Desktop)...\n");
 
+    gui_run_interactive();
+
+    /* Fallback to CLI shell if GUI desktop is exited */
+    kprintf("Falling back to CLI shell...\n");
     shell_run();
 }

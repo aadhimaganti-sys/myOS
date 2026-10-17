@@ -10,12 +10,18 @@
 #include "syscall.h"
 #include "agy.h"
 #include "gui.h"
+#include "keyboard.h"
 #include "input.h"
 #include "wm.h"
 #include "fb.h"
+#include "drivers.h"
+#include "coin.h"
+#include "p2p.h"
 
 /* Forward declarations */
 static void cmd_help(int argc, char **argv);
+static void cmd_kitkoin(int argc, char **argv);
+static void cmd_drivers(int argc, char **argv);
 static void cmd_atlas(int argc, char **argv);
 static void cmd_agy(int argc, char **argv);
 static void cmd_status(int argc, char **argv);
@@ -48,6 +54,8 @@ struct shell_cmd {
 };
 
 static const struct shell_cmd commands[] = {
+    {"kitkoin",   "KitKoin (KIT) native P2P cryptocurrency & blockchain",    cmd_kitkoin},
+    {"kit",       "Alias for kitkoin cryptocurrency command",                cmd_kitkoin},
     {"atlas",     "Atlas Integrated OS Assistant & Subsystem Controller",    cmd_atlas},
     /* Google Antigravity Suite */
     {"agy",       "Display Google Antigravity banner and platform overview", cmd_agy},
@@ -58,6 +66,8 @@ static const struct shell_cmd commands[] = {
     {"spawn",     "Spawn a new autonomous subagent: spawn <name> <role>",     cmd_spawn},
     {"tasks",     "List all active agent and system worker threads",         cmd_tasks},
     {"artifacts", "Inspect generated code and document artifacts in RAMFS",  cmd_artifacts},
+    {"drivers",   "Inspect loaded hardware device drivers and diagnostics",  cmd_drivers},
+    {"drv",       "Alias for drivers command: drv [gui]",                    cmd_drivers},
     {"gui",       "Trigger complete refresh/redraw of the GUI desktop",      cmd_gui},
 
     /* Core Operating System & Utilities */
@@ -134,6 +144,8 @@ static void cmd_help(int argc, char **argv) {
     kprintf("    yield                   - Yield current CPU time-slice\n");
     kprintf("    svc                     - Issue synchronous EL0->EL1 syscall\n");
     kprintf("    reboot                  - Reset VM via ARM PSCI firmware call\n");
+    kprintf("\n  Decentralized Cryptocurrency (KitKoin):\n");
+    kprintf("    kitkoin (kit)           - Decentralized P2P cryptocurrency dashboard & commands\n");
     kprintf("====================================================================\n\n");
 }
 
@@ -293,11 +305,261 @@ static void cmd_artifacts(int argc, char **argv) {
     ramfs_list();
 }
 
+static void cmd_drivers(int argc, char **argv) {
+    if (argc > 1) {
+        if (strcmp(argv[1], "gui") == 0 || strcmp(argv[1], "open") == 0) {
+            wm_open_window(WIN_DRIVERS);
+            gui_refresh();
+            kprintf("[+] Opened Hardware Device Drivers Manager in GUI desktop.\n");
+            return;
+        } else if (strcmp(argv[1], "test") == 0) {
+            if (argc > 2) {
+                if (strcmp(argv[2], "all") == 0) {
+                    drivers_test_all();
+                } else if (argv[2][0] >= '0' && argv[2][0] <= '9') {
+                    int idx = argv[2][0] - '0';
+                    if (argv[2][1] >= '0' && argv[2][1] <= '9') {
+                        idx = idx * 10 + (argv[2][1] - '0');
+                    }
+                    drivers_self_test(idx);
+                } else {
+                    drivers_test_by_tag(argv[2]);
+                }
+            } else {
+                drivers_test_all();
+            }
+            return;
+        }
+    }
+    drivers_dump_cli();
+}
+
 static void cmd_gui(int argc, char **argv) {
-    (void)argc;
-    (void)argv;
+    if (argc > 1 && (strcmp(argv[1], "drivers") == 0 || strcmp(argv[1], "drv") == 0)) {
+        wm_open_window(WIN_DRIVERS);
+    }
     kprintf("[*] Entering interactive Graphical Desktop Terminal (ESC or 'exit' to return)...\n");
     gui_run_interactive();
+}
+
+static void cmd_kitkoin(int argc, char **argv) {
+    if (argc < 2 || strcmp(argv[1], "status") == 0) {
+        struct coin_wallet *my_w = coin_get_my_wallet();
+        kprintf("\n====================================================================\n");
+        kprintf("      _  _____ _____ _  _____ ___ _   _                            \n");
+        kprintf("     | |/ /_ _|_   _| |/ / _ \\_ _| \\ | |                           \n");
+        kprintf("     | ' / | |  | | | ' / | | | ||  \\| |                           \n");
+        kprintf("     | . \\ | |  | | | . \\ |_| | || |\\  |                           \n");
+        kprintf("     |_|\\_\\___| |_| |_|\\_\\___/|___|_| \\_|                           \n");
+        kprintf("         KitKoin (KIT) - Decentralized Native P2P Cryptocurrency   \n");
+        kprintf("====================================================================\n");
+        kprintf("  Network Name:        KitKoin Mainnet (Wi-Fi / LAN P2P Mesh)\n");
+        kprintf("  Ticker Symbol:       KIT (Max Supply: %lu KIT)\n", COIN_MAX_SUPPLY);
+        kprintf("  Consensus:           Proof-of-Work (PoW / Dual SHA-256)\n");
+        kprintf("  Current Block Height:#%u\n", coin_get_height());
+        kprintf("  Block Subsidy:       %lu KIT (Halving Interval: %u blocks)\n",
+                coin_get_block_reward(coin_get_height()), COIN_HALVING_INTERVAL);
+        kprintf("  Halving Countdown:   %u blocks until next reward halving\n", coin_get_blocks_until_halving());
+        kprintf("  Mining Difficulty:   %u leading hex zeros\n", coin_get_difficulty());
+        kprintf("  Circulating Supply:  %lu KIT\n", coin_get_circulating_supply());
+        kprintf("  Pending Mempool TXs: %u transactions\n", coin_get_mempool_count());
+        kprintf("  Background AutoMiner:%s\n", coin_automine_is_running() ? "ACTIVE (Mining in background)" : "IDLE");
+        kprintf("  P2P Wi-Fi Peers:     %d nodes connected (Port: %u)\n", p2p_get_peer_count(), P2P_DEFAULT_PORT);
+        kprintf("  ------------------------------------------------------------------\n");
+        kprintf("  Active Node Wallet:  %s (%s)\n", my_w->address, my_w->label);
+        kprintf("  Active Balance:      %lu KIT\n\n", my_w->balance);
+        kprintf("Available KitKoin Commands:\n");
+        kprintf("  kitkoin wallet                   - List all registered wallets & active selection\n");
+        kprintf("  kitkoin newwallet [label]        - Cryptographically generate a new wallet address\n");
+        kprintf("  kitkoin switch <address>         - Switch active mining/spending node wallet\n");
+        kprintf("  kitkoin balance [address]        - Check balance in KIT\n");
+        kprintf("  kitkoin send <to> <amt> [fee]    - Transfer KIT to another address with optional fee\n");
+        kprintf("  kitkoin mine [count]             - Run CPU Proof-of-Work to mine 1 or N blocks\n");
+        kprintf("  kitkoin automine [on|off|status] - Multi-tasking background CPU mining worker\n");
+        kprintf("  kitkoin block <height>           - Detailed block header, merkle root & tx inspector\n");
+        kprintf("  kitkoin tx <hex_prefix>          - Transaction lookup (mempool / confirmed blocks)\n");
+        kprintf("  kitkoin history [address]        - Chronological account transaction history\n");
+        kprintf("  kitkoin chain                    - Inspect the full blockchain ledger\n");
+        kprintf("  kitkoin verify                   - Zero-deficit ledger audit & cryptographic verify\n");
+        kprintf("  kitkoin benchmark [ms]           - Benchmark bare-metal ARM CPU SHA-256 hashrate\n");
+        kprintf("  kitkoin peer <list|add|ping|sync|sim> - Wi-Fi P2P network operations\n");
+        kprintf("  kitkoin save                     - Persist wallets and blockchain state to disk.img\n");
+        kprintf("  kitkoin load                     - Reload wallets and blockchain state from disk.img\n");
+        kprintf("  kitkoin claim [amount]           - Claim/restore KIT coins into active wallet (default: 1000)\n");
+        kprintf("  kitkoin gui                      - Launch interactive graphical desktop dashboard\n");
+        kprintf("====================================================================\n\n");
+        return;
+    }
+
+    if (strcmp(argv[1], "wallet") == 0 || strcmp(argv[1], "wallets") == 0) {
+        coin_dump_wallets();
+    } else if (strcmp(argv[1], "newwallet") == 0 || strcmp(argv[1], "new") == 0) {
+        const char *label = (argc >= 3) ? argv[2] : "UserWallet";
+        struct coin_wallet *w = coin_create_wallet(label);
+        if (w) {
+            kprintf("[+] Generated new KitKoin wallet!\n");
+            kprintf("    Label:   %s\n", w->label);
+            kprintf("    Address: %s\n", w->address);
+            kprintf("    Balance: 0 KIT\n");
+            kprintf("    Tip: Use 'kitkoin switch %s' to activate.\n", w->address);
+        }
+    } else if (strcmp(argv[1], "switch") == 0) {
+        if (argc < 3) {
+            kprintf("Usage: kitkoin switch <address>\n");
+            return;
+        }
+        if (coin_switch_wallet(argv[2]) == 0) {
+            struct coin_wallet *w = coin_get_my_wallet();
+            kprintf("[+] Successfully switched active node wallet to %s (%s) | Balance: %lu KIT\n",
+                    w->address, w->label, w->balance);
+        } else {
+            kprintf("[KitKoin:ERR] Wallet address '%s' not found!\n", argv[2]);
+        }
+    } else if (strcmp(argv[1], "balance") == 0) {
+        if (argc >= 3) {
+            uint64_t bal = coin_get_balance(argv[2]);
+            kprintf("Balance of %s: %lu KIT\n", argv[2], bal);
+        } else {
+            struct coin_wallet *my_w = coin_get_my_wallet();
+            kprintf("Active Wallet (%s | %s): %lu KIT\n", my_w->address, my_w->label, my_w->balance);
+        }
+    } else if (strcmp(argv[1], "mine") == 0) {
+        if (argc >= 3) {
+            uint32_t count = 0;
+            const char *p = argv[2];
+            while (*p >= '0' && *p <= '9') {
+                count = count * 10 + (*p - '0');
+                p++;
+            }
+            coin_mine_blocks(count);
+        } else {
+            coin_mine_block();
+        }
+    } else if (strcmp(argv[1], "automine") == 0) {
+        if (argc >= 3) {
+            if (strcmp(argv[2], "on") == 0) {
+                coin_automine_start();
+            } else if (strcmp(argv[2], "off") == 0) {
+                coin_automine_stop();
+            } else {
+                kprintf("Autominer Status: %s\n", coin_automine_is_running() ? "RUNNING" : "STOPPED");
+            }
+        } else {
+            kprintf("Autominer Status: %s (Usage: kitkoin automine on|off)\n",
+                    coin_automine_is_running() ? "RUNNING" : "STOPPED");
+        }
+    } else if (strcmp(argv[1], "send") == 0) {
+        if (argc < 4) {
+            kprintf("Usage: kitkoin send <recipient_address> <amount> [fee]\n");
+            kprintf("Example: kitkoin send kit1peer0000000000002 10 1\n");
+            return;
+        }
+        uint64_t amount = 0;
+        const char *p = argv[3];
+        while (*p >= '0' && *p <= '9') {
+            amount = amount * 10 + (*p - '0');
+            p++;
+        }
+        uint64_t fee = 0;
+        if (argc >= 5) {
+            const char *f = argv[4];
+            while (*f >= '0' && *f <= '9') {
+                fee = fee * 10 + (*f - '0');
+                f++;
+            }
+        }
+        if (amount == 0) {
+            kprintf("[KitKoin:ERR] Invalid amount specified!\n");
+            return;
+        }
+        coin_send_with_fee(argv[2], amount, fee);
+    } else if (strcmp(argv[1], "block") == 0) {
+        if (argc < 3) {
+            kprintf("Usage: kitkoin block <height>\n");
+            return;
+        }
+        uint32_t height = 0;
+        const char *p = argv[2];
+        while (*p >= '0' && *p <= '9') {
+            height = height * 10 + (*p - '0');
+            p++;
+        }
+        coin_dump_block(height);
+    } else if (strcmp(argv[1], "tx") == 0) {
+        if (argc < 3) {
+            kprintf("Usage: kitkoin tx <hex_prefix_or_full_hash>\n");
+            return;
+        }
+        coin_dump_tx(argv[2]);
+    } else if (strcmp(argv[1], "history") == 0) {
+        const char *addr = (argc >= 3) ? argv[2] : NULL;
+        coin_dump_history(addr);
+    } else if (strcmp(argv[1], "chain") == 0 || strcmp(argv[1], "blocks") == 0) {
+        coin_dump_chain();
+    } else if (strcmp(argv[1], "verify") == 0 || strcmp(argv[1], "audit") == 0) {
+        coin_verify_chain();
+    } else if (strcmp(argv[1], "benchmark") == 0 || strcmp(argv[1], "bench") == 0) {
+        uint32_t ms = 1000;
+        if (argc >= 3) {
+            ms = 0;
+            const char *p = argv[2];
+            while (*p >= '0' && *p <= '9') {
+                ms = ms * 10 + (*p - '0');
+                p++;
+            }
+            if (ms == 0) ms = 1000;
+        }
+        coin_benchmark(ms);
+    } else if (strcmp(argv[1], "peer") == 0 || strcmp(argv[1], "p2p") == 0 ||
+               strcmp(argv[1], "wifi") == 0 || strcmp(argv[1], "network") == 0) {
+        if (argc >= 3 && strcmp(argv[2], "ping") == 0) {
+            p2p_ping_peers();
+        } else if (argc >= 3 && strcmp(argv[2], "sync") == 0) {
+            p2p_sync();
+        } else if (argc >= 3 && (strcmp(argv[2], "sim") == 0 || strcmp(argv[2], "simulate") == 0)) {
+            p2p_simulate_traffic();
+        } else if (argc >= 3 && strcmp(argv[2], "add") == 0) {
+            if (argc < 4) {
+                kprintf("Usage: kitkoin peer add <ip_address> [node_id]\n");
+            } else {
+                const char *nid = (argc >= 5) ? argv[4] : "ext-node";
+                p2p_add_peer(nid, argv[3], P2P_DEFAULT_PORT);
+            }
+        } else {
+            p2p_dump_status();
+        }
+    } else if (strcmp(argv[1], "save") == 0) {
+        if (coin_save() == 0) {
+            kprintf("[+] KitKoin wallet & blockchain successfully saved to disk.img and ramfs:wallet.txt!\n");
+        } else {
+            kprintf("[-] Failed to save KitKoin state to disk.\n");
+        }
+    } else if (strcmp(argv[1], "load") == 0) {
+        if (coin_load() == 0) {
+            kprintf("[+] KitKoin wallet & blockchain successfully restored from disk.img!\n");
+        } else {
+            kprintf("[-] No saved KitKoin state found on disk.\n");
+        }
+    } else if (strcmp(argv[1], "claim") == 0 || strcmp(argv[1], "faucet") == 0 ||
+               strcmp(argv[1], "restore") == 0) {
+        uint64_t amt = 1000;
+        if (argc >= 3) {
+            amt = 0;
+            const char *p = argv[2];
+            while (*p >= '0' && *p <= '9') {
+                amt = amt * 10 + (*p - '0');
+                p++;
+            }
+            if (amt == 0) amt = 1000;
+        }
+        coin_faucet(amt);
+    } else if (strcmp(argv[1], "gui") == 0) {
+        kprintf("[*] Launching KitKoin Graphical Crypto Dashboard...\n");
+        wm_open_window(WIN_KITKOIN);
+        gui_run_interactive();
+    } else {
+        kprintf("Unknown kitkoin command '%s'. Type 'kitkoin' for help.\n", argv[1]);
+    }
 }
 
 static void atlas_worker_thread(void) {
@@ -322,6 +584,7 @@ static void cmd_atlas(int argc, char **argv) {
         kprintf("====================================================================\n");
         kprintf("  Status:              ACTIVE\n");
         kprintf("  Privilege Level:     EL4 (Cognitive Executive / Out-of-Band Supervisor)\n");
+        kprintf("  AI Architecture:     Causal Self-Attention Transformer LM (30,000+ Weights)\n");
         kprintf("  Supervisory Domain:  Host Environment, Firmware (EL3), Kernel (EL1), User (EL0)\n");
         kprintf("  Control Scope:       Memory MMU, Scheduling, VirtIO Storage, Framebuffer GUI\n\n");
         kprintf("Available Atlas Commands:\n");
@@ -625,7 +888,7 @@ void shell_run(void) {
         memset(line, 0, sizeof(line));
 
         while (1) {
-            /* 1. Poll VirtIO input devices */
+            /* 1. Poll VirtIO input devices (tablet/mouse) */
             input_poll();
 
             /* 2. Dispatch mouse state to Window Manager */
@@ -633,19 +896,39 @@ void shell_run(void) {
             input_get_mouse(&mx, &my, &mbtns);
             wm_handle_mouse(mx, my, mbtns);
 
-            /* 3. Read input from VirtIO keyboard or UART */
-            char c = 0;
-            int has_char = 0;
-            if (input_getc_nonblock(&c)) {
-                has_char = 1;
-            } else if (uart_getc_nonblock(&c)) {
-                has_char = 1;
-            }
+            /* 3. Poll Unified Keyboard Subsystem (Hardware VirtIO + Physical UART Console) */
+            struct key_event ev;
+            int has_event = keyboard_poll(&ev);
 
-            if (!has_char) {
+            if (!has_event) {
                 /* Non-blocking: refresh GUI desktop and yield CPU */
                 gui_refresh();
                 task_yield();
+                continue;
+            }
+
+            /* Live visual feedback: light up key on On-Screen Virtual Keyboard */
+            wm_keyboard_set_active_key(ev.scancode, ev.pressed);
+
+            /* Only process key-down for input and hotkeys */
+            if (!ev.pressed) {
+                gui_refresh();
+                continue;
+            }
+
+            /* Physical Keyboard Hotkeys to switch/open GUI Windows */
+            if (ev.scancode == KEY_F1) { wm_open_window(WIN_TERMINAL); gui_refresh(); continue; }
+            if (ev.scancode == KEY_F2) { wm_open_window(WIN_KEYBOARD); gui_refresh(); continue; }
+            if (ev.scancode == KEY_F3) { wm_open_window(WIN_CALC);     gui_refresh(); continue; }
+            if (ev.scancode == KEY_F4) { wm_open_window(WIN_FILES);    gui_refresh(); continue; }
+            if (ev.scancode == KEY_F5) { wm_open_window(WIN_DRIVERS);  gui_refresh(); continue; }
+            if (ev.scancode == KEY_F6) { wm_open_window(WIN_SYSTEM);   gui_refresh(); continue; }
+            if (ev.scancode == KEY_F7) { wm_open_window(WIN_AGENTS);   gui_refresh(); continue; }
+            if (ev.scancode == KEY_F8) { wm_open_window(WIN_ABOUT);    gui_refresh(); continue; }
+
+            char c = ev.ascii;
+            if (!c) {
+                gui_refresh();
                 continue;
             }
 
@@ -687,6 +970,7 @@ void shell_run(void) {
                     gui_terminal_putc(c);
                 }
             }
+            gui_refresh();
         }
 
         if (pos > 0) {

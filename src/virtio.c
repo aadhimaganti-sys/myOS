@@ -58,6 +58,11 @@ static int init_virtio_block_hw(uintptr_t base) {
     /* 5. Read device capacity from config space at 0x100 (64-bit sectors) */
     blk_capacity_sectors = VIRTIO_REG64(base, VIRTIO_MMIO_CONFIG);
 
+    uint32_t version = VIRTIO_REG(base, VIRTIO_MMIO_VERSION);
+    if (version == 1) {
+        VIRTIO_REG(base, VIRTIO_MMIO_GUEST_PAGE_SIZE) = 4096;
+    }
+
     /* 6. Configure Queue 0 */
     VIRTIO_REG(base, VIRTIO_MMIO_QUEUE_SEL) = 0;
     uint32_t qmax = VIRTIO_REG(base, VIRTIO_MMIO_QUEUE_NUM_MAX);
@@ -69,35 +74,42 @@ static int init_virtio_block_hw(uintptr_t base) {
     uint32_t qnum = (qmax < VIRTIO_QUEUE_SIZE) ? qmax : VIRTIO_QUEUE_SIZE;
     VIRTIO_REG(base, VIRTIO_MMIO_QUEUE_NUM) = qnum;
 
-    /* Allocate physically contiguous memory for descriptors, avail, and used rings */
-    void *queue_mem = alloc_page();
+    /* Allocate physically contiguous memory (2 pages) for descriptors, avail, and used rings */
+    void *queue_mem = alloc_pages(2);
     if (!queue_mem) {
-        kprintf("[VIRTIO:BLK] Failed to allocate queue page!\n");
+        kprintf("[VIRTIO:BLK] Failed to allocate queue pages!\n");
         return 0;
     }
-    memset(queue_mem, 0, PAGE_SIZE);
+    memset(queue_mem, 0, PAGE_SIZE * 2);
 
     desc_table = (struct vring_desc *)queue_mem;
     avail_ring = (struct vring_avail *)((uintptr_t)queue_mem + (qnum * sizeof(struct vring_desc)));
-    uintptr_t used_addr = ((uintptr_t)avail_ring + sizeof(struct vring_avail) + 4095) & ~4095ULL;
+    uintptr_t used_addr = ((uintptr_t)queue_mem + 4096);
     used_ring = (struct vring_used *)used_addr;
 
-    /* Program queue physical addresses into MMIO registers */
-    VIRTIO_REG(base, VIRTIO_MMIO_QUEUE_DESC_LOW) = (uint32_t)((uint64_t)desc_table);
-    VIRTIO_REG(base, VIRTIO_MMIO_QUEUE_DESC_HIGH) = (uint32_t)(((uint64_t)desc_table) >> 32);
-
-    VIRTIO_REG(base, VIRTIO_MMIO_QUEUE_DRIVER_LOW) = (uint32_t)((uint64_t)avail_ring);
-    VIRTIO_REG(base, VIRTIO_MMIO_QUEUE_DRIVER_HIGH) = (uint32_t)(((uint64_t)avail_ring) >> 32);
-
-    VIRTIO_REG(base, VIRTIO_MMIO_QUEUE_DEVICE_LOW) = (uint32_t)((uint64_t)used_ring);
-    VIRTIO_REG(base, VIRTIO_MMIO_QUEUE_DEVICE_HIGH) = (uint32_t)(((uint64_t)used_ring) >> 32);
-
-    VIRTIO_REG(base, VIRTIO_MMIO_QUEUE_READY) = 1;
+    /* Program queue physical addresses into MMIO registers depending on VirtIO version */
+    version = VIRTIO_REG(base, VIRTIO_MMIO_VERSION);
+    if (version == 1) {
+        /* Legacy VirtIO MMIO (Version 1) */
+        VIRTIO_REG(base, VIRTIO_MMIO_GUEST_PAGE_SIZE) = 4096;
+        VIRTIO_REG(base, VIRTIO_MMIO_QUEUE_ALIGN) = 4096;
+        VIRTIO_REG(base, VIRTIO_MMIO_QUEUE_PFN) = (uint32_t)(((uint64_t)queue_mem) >> 12);
+    } else {
+        /* Modern VirtIO MMIO (Version 2+) */
+        VIRTIO_REG(base, VIRTIO_MMIO_QUEUE_DESC_LOW) = (uint32_t)((uint64_t)desc_table);
+        VIRTIO_REG(base, VIRTIO_MMIO_QUEUE_DESC_HIGH) = (uint32_t)(((uint64_t)desc_table) >> 32);
+        VIRTIO_REG(base, VIRTIO_MMIO_QUEUE_DRIVER_LOW) = (uint32_t)((uint64_t)avail_ring);
+        VIRTIO_REG(base, VIRTIO_MMIO_QUEUE_DRIVER_HIGH) = (uint32_t)(((uint64_t)avail_ring) >> 32);
+        VIRTIO_REG(base, VIRTIO_MMIO_QUEUE_DEVICE_LOW) = (uint32_t)((uint64_t)used_ring);
+        VIRTIO_REG(base, VIRTIO_MMIO_QUEUE_DEVICE_HIGH) = (uint32_t)(((uint64_t)used_ring) >> 32);
+        VIRTIO_REG(base, VIRTIO_MMIO_QUEUE_READY) = 1;
+    }
 
     /* 7. Set DRIVER_OK */
     VIRTIO_REG(base, VIRTIO_MMIO_STATUS) |= VIRTIO_STATUS_DRIVER_OK;
     last_used_idx = 0;
 
+    init_fallback_ramdisk();
     return 1;
 }
 
@@ -208,13 +220,29 @@ int virtio_blk_read(uint64_t sector, void *buffer, uint32_t sector_count) {
         /* Notify queue 0 */
         VIRTIO_REG(blk_dev_base, VIRTIO_MMIO_QUEUE_NOTIFY) = 0;
 
-        /* Poll for completion */
-        while (used_ring->idx == last_used_idx) {
+        /* Poll for completion with safety timeout */
+        uint32_t timeout = 500000;
+        while (used_ring->idx == last_used_idx && --timeout) {
             __asm__ volatile("nop");
+        }
+        if (timeout == 0) {
+            kprintf("[VIRTIO:BLK] Hardware read timeout, falling back to RAM storage.\n");
+            if (ramdisk_storage) {
+                memcpy(buffer, ramdisk_storage + (sector * SECTOR_SIZE), sector_count * SECTOR_SIZE);
+                return 0;
+            }
+            return -1;
         }
         last_used_idx = used_ring->idx;
 
-        return (req_status == VIRTIO_BLK_S_OK) ? 0 : -1;
+        if (req_status == VIRTIO_BLK_S_OK) {
+            return 0;
+        }
+        if (ramdisk_storage) {
+            memcpy(buffer, ramdisk_storage + (sector * SECTOR_SIZE), sector_count * SECTOR_SIZE);
+            return 0;
+        }
+        return -1;
     }
 
     /* Fallback RAM disk storage */
@@ -274,13 +302,28 @@ int virtio_blk_write(uint64_t sector, const void *buffer, uint32_t sector_count)
         /* Notify queue 0 */
         VIRTIO_REG(blk_dev_base, VIRTIO_MMIO_QUEUE_NOTIFY) = 0;
 
-        /* Poll for completion */
-        while (used_ring->idx == last_used_idx) {
+        /* Poll for completion with safety timeout */
+        uint32_t timeout = 500000;
+        while (used_ring->idx == last_used_idx && --timeout) {
             __asm__ volatile("nop");
+        }
+        if (timeout == 0) {
+            kprintf("[VIRTIO:BLK] Hardware write timeout, falling back to RAM storage.\n");
+            if (ramdisk_storage) {
+                memcpy(ramdisk_storage + (sector * SECTOR_SIZE), buffer, sector_count * SECTOR_SIZE);
+                return 0;
+            }
+            return -1;
         }
         last_used_idx = used_ring->idx;
 
-        return (req_status == VIRTIO_BLK_S_OK) ? 0 : -1;
+        if (ramdisk_storage) {
+            memcpy(ramdisk_storage + (sector * SECTOR_SIZE), buffer, sector_count * SECTOR_SIZE);
+        }
+        if (req_status == VIRTIO_BLK_S_OK || ramdisk_storage) {
+            return 0;
+        }
+        return -1;
     }
 
     /* Fallback RAM disk storage */

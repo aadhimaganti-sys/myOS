@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-Atlas Local AI Assistant & Machine Learning Engine
-Learns and trains dynamically on what you say to it.
+Atlas Neural AI Engine (EL4)
+Powered by a Causal Self-Attention Transformer Deep Learning Model (NumPy).
+Continuously trains its neural weights on user input via backpropagation.
 """
 
 import os
@@ -9,7 +10,8 @@ import sys
 import time
 import readline
 from pathlib import Path
-from learner import AtlasLearner
+import numpy as np
+from neural_net import AtlasTransformerLM
 
 # Terminal ANSI Color Codes
 CYAN = "\033[96m"
@@ -30,9 +32,9 @@ def get_banner(stats):
  / /_\\ \\ | | | |     / _ \\\\___ \\ 
 /  _  \\ | | | |___ / ___ \\___) |
 \\_/ \\_/ |_| |_____/_/   \\_\\____/ 
-{RESET}{DIM}Local AI Assistant & Adaptive Machine Learning Engine (Privilege: EL4){RESET}
-{MAGENTA}[ML Status: {stats['training_steps']} training steps | Vocab: {stats['vocabulary_size']} words | Facts: {stats['facts_stored']}]{RESET}
-{YELLOW}Type {BOLD}/help{RESET}{YELLOW} for ML & OS tools, or simply chat and teach Atlas!{RESET}
+{RESET}{DIM}Deep Learning Neural Language Model & Systems Orchestrator (Privilege: EL4){RESET}
+{MAGENTA}[Architecture: Transformer (Causal Self-Attention) | Parameters: {stats['total_parameters']:,} | Steps: {stats['training_steps']} | Vocab: {stats['vocab_size']}]{RESET}
+{YELLOW}Type {BOLD}/help{RESET}{YELLOW} to inspect neural weights, loss curves, or chat to train the model live!{RESET}
 """
 
 def print_atlas(text: str):
@@ -86,61 +88,68 @@ def run_project_review():
 """
     print(review_text)
 
-def handle_chat_input(prompt: str, learner: AtlasLearner):
+def handle_chat_input(prompt: str, model: AtlasTransformerLM):
     p_lower = prompt.lower().strip()
 
-    # Step 1: Train model on user input
-    prev_facts = len(learner.facts)
-    learner.train_on_input(prompt)
-    new_facts = len(learner.facts)
+    # 1. Real Deep Learning Training: Backpropagation on user prompt
+    train_badge = ""
+    words = model.tokenize(prompt)
+    if len(words) >= 2:
+        l0, l1 = model.train_on_text(prompt, epochs=5)
+        train_badge = f"{MAGENTA}[Neural Backprop: Loss {l0:.3f} -> {l1:.3f} | 5 Epochs Trained | Weights Updated]{RESET}\n"
 
-    feedback_badge = ""
-    if new_facts > prev_facts:
-        feedback_badge = f"{MAGENTA}[Learned new fact: \"{learner.facts[-1]}\"]{RESET}\n"
-
-    # Step 2: Check query against learned knowledge base
-    learned_answer = learner.query_learned_knowledge(prompt)
+    # 2. Dense Semantic Vector Match
+    semantic_match = model.semantic_recall(prompt)
 
     if p_lower in ("hi", "hello", "hey", "sup", "yo"):
-        stats = learner.get_stats()
-        return feedback_badge + f"Hello! Great to connect. My neural weights are loaded with {stats['vocabulary_size']} words and {stats['facts_stored']} learned facts from you. What are we exploring today?"
+        stats = model.get_model_stats()
+        return train_badge + f"Hello! My neural network is active with {stats['total_parameters']:,} learnable weights across {stats['vocab_size']} vocabulary tokens. I train via backpropagation on every sentence you send me!"
 
     if "who are you" in p_lower or "what are you" in p_lower:
-        return feedback_badge + "I am Atlas, your adaptive AI companion operating at Cognitive Exception Level 4 (EL4)! I learn and train dynamically on our conversations."
+        stats = model.get_model_stats()
+        return train_badge + f"I am Atlas, an actual Neural AI running on a Transformer architecture ({stats['total_parameters']:,} parameters) with causal self-attention, dense embeddings, and live backpropagation."
 
     if "el4" in p_lower:
-        return feedback_badge + ("I operate at Cognitive Exception Level 4 (EL4)! While physical ARM CPU hardware stops at EL3 "
-                "(Secure Monitor), EL4 represents out-of-band supervisory intelligence: total observability over "
-                "the host, hypervisor (EL2), kernel (EL1), and user tasks (EL0) with live code synthesis and adaptive memory!")
+        return train_badge + ("I operate at Cognitive Exception Level 4 (EL4)! In our architecture, while physical ARM hardware stops at EL3 "
+                "(Secure Monitor), EL4 represents out-of-band neural intelligence: complete observability over "
+                "the hypervisor (EL2), kernel (EL1), and user tasks (EL0) with live neural weight adaptation!")
 
     if "os" in p_lower or "phase" in p_lower or "progress" in p_lower or "kernel" in p_lower:
-        return feedback_badge + ("Your myOS project has completed Phases 1, 2, and 3! We have a working 64-bit ARM kernel with identity "
-                "paging, GICv2 interrupts, Generic Timer, 64MB page allocator, kmalloc heap, preemptive scheduler, "
-                "VirtIO block driver, and framebuffer graphics. You can type `/review` to see a full breakdown!")
+        return train_badge + ("myOS has successfully implemented Phases 1, 2, and 3: 4-Level MMU identity paging, GICv2 interrupts, "
+                "Generic Timer, 64MB physical page allocator, dynamic kmalloc heap, preemptive multitasking scheduler, "
+                "VirtIO block driver, and framebuffer graphics. Type `/review` for the full breakdown!")
 
     if "scheduler" in p_lower or "sched" in p_lower:
-        return feedback_badge + ("The scheduler (`src/sched.c`) uses round-robin time slicing (5 ticks / 50ms) driven by the ARM Generic Timer PPI 14. "
+        return train_badge + ("The scheduler (`src/sched.c`) uses round-robin time slicing (5 ticks / 50ms) driven by the ARM Generic Timer PPI 14. "
                 "Context switches save and restore x19-x30 and SP via `cpu_switch_to` in `src/switch.S`.")
 
     if "memory" in p_lower or "heap" in p_lower or "malloc" in p_lower:
-        return feedback_badge + ("Memory management (`src/mm.c`) manages 64 MB of RAM starting at `__heap_start`. "
+        return train_badge + ("Memory management (`src/mm.c`) manages 64 MB of RAM starting at `__heap_start`. "
                 "It uses a bitmap page allocator for 4KB pages, and a block-header linked list for fine-grained `kmalloc`/`kfree` with coalescing.")
 
-    # If the user asked something we have learned facts or concept associations about:
-    if learned_answer:
-        return feedback_badge + learned_answer
+    # 3. Dense Retrieval from Neural Memory
+    if semantic_match and not p_lower.endswith("?"):
+        matched_text, sim = semantic_match
+        if matched_text.lower() != p_lower:
+            return train_badge + f"Neural semantic memory (cosine similarity: {sim:.2f}) matches prior knowledge: \"{matched_text}\"."
 
-    # Dynamic trained synthesis response
-    return feedback_badge + (
-        f"I've ingested and trained on that! (Vocabulary: {len(learner.vocab)} words, {learner.training_steps} training steps). "
-        f"You can ask me questions about what you've taught me, type `/brain` to see my neural stats, or `/generate` to hear me synthesize text!"
+    if semantic_match and p_lower.endswith("?"):
+        matched_text, sim = semantic_match
+        return train_badge + f"Neural memory recalled (similarity: {sim:.2f}): \"{matched_text}\"."
+
+    # 4. Neural Autoregressive Generation
+    generation = model.generate(prompt=prompt, max_new_tokens=10, temperature=0.7)
+    return train_badge + (
+        f"Input ingested into Transformer weights! "
+        f"Neural token continuation: \"{generation}\". "
+        f"Type `/model` to inspect neural parameters or `/loss` to view training convergence!"
     )
 
 def main():
-    learner = AtlasLearner()
-    print(get_banner(learner.get_stats()))
+    model = AtlasTransformerLM()
+    print(get_banner(model.get_model_stats()))
 
-    print_atlas("Hello! I am Atlas (EL4). My machine learning engine trains continuously on whatever you say. What would you like to teach or discuss?")
+    print_atlas("Hello! I am Atlas (EL4). My neural network trains on every input using backpropagation. How can I assist you?")
 
     while True:
         try:
@@ -149,50 +158,63 @@ def main():
                 continue
 
             if user_input.lower() in ("/exit", "/quit", "exit", "quit"):
-                print(f"\n{CYAN}Atlas:{RESET} Goodbye! All learned weights saved to memory.json. See you soon!\n")
+                model.save_weights()
+                print(f"\n{CYAN}Atlas:{RESET} All neural weights saved to neural_weights.npz. Goodbye!\n")
                 break
 
             elif user_input == "/help":
                 print(f"""
-{BOLD}Atlas Local CLI & ML Commands:{RESET}
-  {CYAN}/brain{RESET}         - View real-time Machine Learning stats and memory metrics
-  {CYAN}/facts{RESET}         - Display all learned semantic facts taught to Atlas
-  {CYAN}/generate [seed]{RESET} - Generate synthetic text from the model trained on your input
-  {CYAN}/forget{RESET}        - Reset learned weights and clear memory.json
+{BOLD}Atlas Neural AI & OS Commands:{RESET}
+  {CYAN}/model{RESET}         - Inspect Transformer architecture, layers, and learnable parameter count
+  {CYAN}/loss{RESET}          - View Cross-Entropy Loss training history and convergence curve
+  {CYAN}/generate [prompt]{RESET} - Autoregressively sample tokens from the Transformer network
+  {CYAN}/embed <text>{RESET}   - Compute and print the dense neural vector embedding
   {CYAN}/review{RESET}        - Run a full architectural review of the myOS project
   {CYAN}/files{RESET}         - List all source code and header files in the project
   {CYAN}/read <file>{RESET}   - Display contents of a file (e.g. /read src/kernel.c)
   {CYAN}/clear{RESET}         - Clear the terminal screen
   {CYAN}/exit{RESET}          - Exit Atlas local chat
-  {CYAN}<any text>{RESET}     - Talk to Atlas (automatically trains the model on every message)
+  {CYAN}<any text>{RESET}     - Freeform chat (dynamically trains the neural network via backpropagation)
 """)
-            elif user_input == "/brain":
-                stats = learner.get_stats()
-                print(f"\n{BOLD}=== Atlas Machine Learning & Neural Memory Engine ==={RESET}")
+            elif user_input == "/model":
+                stats = model.get_model_stats()
+                print(f"\n{BOLD}=== Atlas Transformer Deep Learning Architecture ==={RESET}")
+                print(f"  • Model Type:            Causal Self-Attention Transformer LM")
+                print(f"  • Total Parameters:      {stats['total_parameters']:,} learnable weights")
+                print(f"  • Hidden Dimension (D):  {stats['d_model']}")
+                print(f"  • Feed-Forward Dim (FF): {stats['d_ff']}")
+                print(f"  • Vocabulary Size:       {stats['vocab_size']} tokens")
+                print(f"  • Activation Function:   GELU (Gaussian Error Linear Unit)")
+                print(f"  • Optimizer:             Adam (lr={model.lr}, beta1={model.beta1}, beta2={model.beta2})")
                 print(f"  • Training Steps:        {stats['training_steps']}")
-                print(f"  • Vocabulary Size:       {stats['vocabulary_size']} unique tokens")
-                print(f"  • Learned Transitions:   {stats['learned_transitions']} n-gram transitions")
-                print(f"  • Semantic Facts Stored: {stats['facts_stored']}")
-                print(f"  • Memory Storage File:   atlas/memory.json\n")
+                print(f"  • Sentences Learned:     {stats['sentences_trained']}")
+                print(f"  • Last Batch Loss:       {stats['last_loss']:.4f}\n")
 
-            elif user_input == "/facts":
-                if not learner.facts:
-                    print(f"\n{YELLOW}No explicit facts learned yet! Teach me something like 'my favorite language is Rust' or 'remember that the kernel entry is 0x40080000'.{RESET}\n")
+            elif user_input == "/loss":
+                if not model.loss_history:
+                    print(f"\n{YELLOW}No training steps recorded yet. Send some messages to train the network!{RESET}\n")
                 else:
-                    print(f"\n{BOLD}=== Learned Knowledge Base ({len(learner.facts)} facts) ==={RESET}")
-                    for idx, f in enumerate(learner.facts, 1):
-                        print(f"  {idx}. {f}")
+                    print(f"\n{BOLD}=== Neural Network Cross-Entropy Loss History ==={RESET}")
+                    recent = model.loss_history[-15:]
+                    for idx, l in enumerate(recent, 1):
+                        bar = "█" * int(max(1, min(40, l * 8)))
+                        print(f"  Step {idx:2d}: {l:.4f} {CYAN}{bar}{RESET}")
                     print()
 
             elif user_input.startswith("/generate"):
                 parts = user_input.split(maxsplit=1)
-                seed = parts[1] if len(parts) > 1 else None
-                generated = learner.generate_trained_phrase(seed=seed)
-                print(f"\n{MAGENTA}{BOLD}[Trained Model Output]:{RESET} \"{generated}\"\n")
+                seed = parts[1] if len(parts) > 1 else ""
+                generated = model.generate(prompt=seed, max_new_tokens=14, temperature=0.7)
+                print(f"\n{MAGENTA}{BOLD}[Transformer Output]:{RESET} \"{generated}\"\n")
 
-            elif user_input == "/forget":
-                learner.clear_memory()
-                print(f"\n{YELLOW}[Memory Cleared]{RESET} Atlas memory has been reset to base initialization.\n")
+            elif user_input.startswith("/embed"):
+                parts = user_input.split(maxsplit=1)
+                if len(parts) < 2:
+                    print(f"{YELLOW}Usage: /embed <text>{RESET}")
+                else:
+                    vec = model.get_sentence_embedding(parts[1])
+                    print(f"\n{BOLD}Dense Neural Embedding Vector (D={model.d_model}):{RESET}")
+                    print(f"  [{', '.join(f'{x:.3f}' for x in vec[:8])} ... (Norm: {np.linalg.norm(vec):.3f})]\n")
 
             elif user_input == "/review":
                 run_project_review()
@@ -221,15 +243,15 @@ def main():
 
             elif user_input == "/clear":
                 os.system("clear")
-                print(get_banner(learner.get_stats()))
+                print(get_banner(model.get_model_stats()))
 
             else:
-                reply = handle_chat_input(user_input, learner)
-                learner.history.append({"user": user_input, "atlas": reply})
+                reply = handle_chat_input(user_input, model)
                 print_atlas(reply)
 
         except (KeyboardInterrupt, EOFError):
-            print(f"\n\n{CYAN}Atlas:{RESET} Session ended. See you soon!\n")
+            model.save_weights()
+            print(f"\n\n{CYAN}Atlas:{RESET} Session ended. All weights persisted.\n")
             break
 
 if __name__ == "__main__":

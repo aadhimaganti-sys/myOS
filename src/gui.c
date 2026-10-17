@@ -184,16 +184,7 @@ static int gui_line_pos = 0;
 static int gui_exit_requested = 0;
 
 void wm_inject_char(char c) {
-    struct key_event ev;
-    ev.scancode = 0;
-    ev.pressed = 1;
-    ev.modifiers = keyboard_get_modifiers();
-    ev.ascii = c;
-    if (c == '\n' || c == '\r') ev.scancode = KEY_ENTER;
-    else if (c == '\b' || c == 0x7F) ev.scancode = KEY_BACKSPACE;
-    else if (c == '\t') ev.scancode = KEY_TAB;
-    else if (c == 27) ev.scancode = KEY_ESC;
-    gui_handle_key(&ev);
+    keyboard_feed_char(c);
 }
 
 void gui_handle_key(struct key_event *ev) {
@@ -222,14 +213,18 @@ void gui_handle_key(struct key_event *ev) {
         return;
     }
     if (ev->scancode == KEY_F5) {
-        wm_open_window(WIN_SYSTEM);
+        wm_open_window(WIN_DRIVERS);
         return;
     }
     if (ev->scancode == KEY_F6) {
-        wm_open_window(WIN_AGENTS);
+        wm_open_window(WIN_SYSTEM);
         return;
     }
     if (ev->scancode == KEY_F7) {
+        wm_open_window(WIN_AGENTS);
+        return;
+    }
+    if (ev->scancode == KEY_F8) {
         wm_open_window(WIN_ABOUT);
         return;
     }

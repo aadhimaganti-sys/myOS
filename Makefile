@@ -37,21 +37,21 @@ clean:
 run: $(TARGET)
 	@if [ -n "$$DISPLAY" ] && xset q >/dev/null 2>&1; then \
 		echo "[*] Starting QEMU with graphical window..."; \
-		qemu-system-aarch64 -M virt -cpu cortex-a57 -m 128M -serial mon:stdio -device ramfb -device virtio-keyboard-device -device virtio-tablet-device -kernel $(TARGET); \
+		qemu-system-aarch64 -M virt -cpu cortex-a57 -m 128M -serial mon:stdio -device ramfb -device virtio-keyboard-device -device virtio-tablet-device -drive file=disk.img,if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 -kernel $(TARGET); \
 	else \
 		echo "[*] No graphical display detected. Starting QEMU with VNC (:0 on port 5900) & Terminal console..."; \
 		echo "[*] Connect any VNC viewer to localhost:5900 to see the graphical desktop!"; \
-		qemu-system-aarch64 -M virt -cpu cortex-a57 -m 128M -serial mon:stdio -display vnc=:0 -device ramfb -device virtio-keyboard-device -device virtio-tablet-device -kernel $(TARGET); \
+		qemu-system-aarch64 -M virt -cpu cortex-a57 -m 128M -serial mon:stdio -display vnc=:0 -device ramfb -device virtio-keyboard-device -device virtio-tablet-device -drive file=disk.img,if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 -kernel $(TARGET); \
 	fi
 
 run-gui: $(TARGET)
-	qemu-system-aarch64 -M virt -cpu cortex-a57 -m 128M -serial mon:stdio -device ramfb -device virtio-keyboard-device -device virtio-tablet-device -kernel $(TARGET)
+	qemu-system-aarch64 -M virt -cpu cortex-a57 -m 128M -serial mon:stdio -device ramfb -device virtio-keyboard-device -device virtio-tablet-device -drive file=disk.img,if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 -kernel $(TARGET)
 
 run-vnc: $(TARGET)
-	qemu-system-aarch64 -M virt -cpu cortex-a57 -m 128M -serial mon:stdio -display vnc=:0 -device ramfb -device virtio-keyboard-device -device virtio-tablet-device -kernel $(TARGET)
+	qemu-system-aarch64 -M virt -cpu cortex-a57 -m 128M -serial mon:stdio -display vnc=:0 -device ramfb -device virtio-keyboard-device -device virtio-tablet-device -drive file=disk.img,if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 -kernel $(TARGET)
 
 run-headless: $(TARGET)
-	qemu-system-aarch64 -M virt -cpu cortex-a57 -m 128M -nographic -device ramfb -device virtio-keyboard-device -device virtio-tablet-device -kernel $(TARGET)
+	qemu-system-aarch64 -M virt -cpu cortex-a57 -m 128M -nographic -device ramfb -device virtio-keyboard-device -device virtio-tablet-device -drive file=disk.img,if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 -kernel $(TARGET)
 
 .PHONY: all clean run run-gui run-vnc run-headless
 

@@ -76,6 +76,19 @@ int strncmp(const char *s1, const char *s2, size_t n) {
     return *(const unsigned char *)s1 - *(const unsigned char *)s2;
 }
 
+static inline char to_lower(char c) {
+    if (c >= 'A' && c <= 'Z') return c + 32;
+    return c;
+}
+
+int strcasecmp(const char *s1, const char *s2) {
+    while (*s1 && (to_lower(*s1) == to_lower(*s2))) {
+        s1++;
+        s2++;
+    }
+    return (unsigned char)to_lower(*s1) - (unsigned char)to_lower(*s2);
+}
+
 char *strcpy(char *dest, const char *src) {
     char *ret = dest;
     while ((*dest++ = *src++) != '\0') {
@@ -92,6 +105,29 @@ char *strncpy(char *dest, const char *src, size_t n) {
     while (n--) {
         *dest++ = '\0';
     }
+    return ret;
+}
+
+char *strcat(char *dest, const char *src) {
+    char *ret = dest;
+    while (*dest) {
+        dest++;
+    }
+    while ((*dest++ = *src++) != '\0') {
+    }
+    return ret;
+}
+
+char *strncat(char *dest, const char *src, size_t n) {
+    char *ret = dest;
+    while (*dest) {
+        dest++;
+    }
+    while (n && (*src != '\0')) {
+        *dest++ = *src++;
+        n--;
+    }
+    *dest = '\0';
     return ret;
 }
 
@@ -114,4 +150,5 @@ char *strstr(const char *haystack, const char *needle) {
     }
     return NULL;
 }
+
 
