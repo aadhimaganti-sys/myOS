@@ -12,10 +12,10 @@ static uintptr_t gpu_dev_base = 0;
 static uint64_t blk_capacity_sectors = 0;
 
 /* Virtqueue ring structures */
-static struct vring_desc *desc_table = NULL;
-static struct vring_avail *avail_ring = NULL;
-static struct vring_used *used_ring = NULL;
-static uint16_t last_used_idx = 0;
+static volatile struct vring_desc *desc_table = NULL;
+static volatile struct vring_avail *avail_ring = NULL;
+static volatile struct vring_used *used_ring = NULL;
+static volatile uint16_t last_used_idx = 0;
 
 /* Virtual Fallback RAM Disk (1 MB = 2048 sectors of 512 bytes) */
 #define FALLBACK_RAMDISK_SECTORS 2048
@@ -109,7 +109,6 @@ static int init_virtio_block_hw(uintptr_t base) {
     VIRTIO_REG(base, VIRTIO_MMIO_STATUS) |= VIRTIO_STATUS_DRIVER_OK;
     last_used_idx = 0;
 
-    init_fallback_ramdisk();
     return 1;
 }
 
@@ -172,6 +171,111 @@ void virtio_init(void) {
     (void)gpu_dev_base;
 }
 
+static inline void virtio_flush_range(const void *addr, size_t len) {
+    uint64_t start = (uint64_t)addr & ~0x3FULL;
+    uint64_t end = (uint64_t)addr + len;
+    for (uint64_t p = start; p < end; p += 64) {
+        __asm__ volatile("dc civac, %0" : : "r"(p) : "memory");
+    }
+    __asm__ volatile("dsb sy; isb" ::: "memory");
+}
+
+static int virtio_blk_transfer_one(uint64_t sector, void *buf, int is_write) {
+    if (blk_dev_base && desc_table && avail_ring && used_ring) {
+        __attribute__((aligned(16))) static struct virtio_blk_req req;
+        __attribute__((aligned(16))) static volatile uint8_t req_status;
+
+        req.type = is_write ? VIRTIO_BLK_T_OUT : VIRTIO_BLK_T_IN;
+        req.reserved = 0;
+        req.sector = sector;
+        req_status = 0xFF;
+
+        /* Synchronous single-sector transfer using descriptors 0, 1, 2 */
+        /* Descriptor 0: Request Header (Device Reads) */
+        desc_table[0].addr = (uint64_t)&req;
+        desc_table[0].len = sizeof(struct virtio_blk_req);
+        desc_table[0].flags = VRING_DESC_F_NEXT;
+        desc_table[0].next = 1;
+
+        /* Descriptor 1: Data Buffer (1 Sector = 512 Bytes) */
+        desc_table[1].addr = (uint64_t)buf;
+        desc_table[1].len = SECTOR_SIZE;
+        desc_table[1].flags = VRING_DESC_F_NEXT | (is_write ? 0 : VRING_DESC_F_WRITE);
+        desc_table[1].next = 2;
+
+        /* Descriptor 2: Status Byte (Device Writes) */
+        desc_table[2].addr = (uint64_t)&req_status;
+        desc_table[2].len = 1;
+        desc_table[2].flags = VRING_DESC_F_WRITE;
+        desc_table[2].next = 0;
+
+        /* Put descriptor 0 in avail ring */
+        avail_ring->ring[avail_ring->idx % VIRTIO_QUEUE_SIZE] = 0;
+        avail_ring->idx++;
+
+        virtio_flush_range(&req, sizeof(req));
+        virtio_flush_range((const void *)&req_status, sizeof(req_status));
+        virtio_flush_range(buf, SECTOR_SIZE);
+        virtio_flush_range((const void *)desc_table, sizeof(struct vring_desc) * 3);
+        virtio_flush_range((const void *)avail_ring, sizeof(struct vring_avail));
+
+        /* Notify queue 0 */
+        VIRTIO_REG(blk_dev_base, VIRTIO_MMIO_QUEUE_NOTIFY) = 0;
+
+        /* Poll for completion with safety timeout */
+        uint32_t timeout = 50000000;
+        while (1) {
+            virtio_flush_range((const void *)&used_ring->idx, sizeof(used_ring->idx));
+            if (used_ring->idx != last_used_idx) break;
+            if (--timeout == 0) break;
+            __asm__ volatile("dmb sy" ::: "memory");
+        }
+
+        virtio_flush_range((const void *)&req_status, sizeof(req_status));
+        if (!is_write) {
+            virtio_flush_range(buf, SECTOR_SIZE);
+        }
+
+        if (timeout == 0) {
+            kprintf("[VIRTIO:BLK] Hardware transfer TIMEOUT on sector %lu! (used_idx=%u, last_idx=%u)\n",
+                    sector, used_ring->idx, last_used_idx);
+            if (ramdisk_storage) {
+                if (is_write) {
+                    memcpy(ramdisk_storage + (sector * SECTOR_SIZE), buf, SECTOR_SIZE);
+                } else {
+                    memcpy(buf, ramdisk_storage + (sector * SECTOR_SIZE), SECTOR_SIZE);
+                }
+                return 0;
+            }
+            return -1;
+        }
+        last_used_idx = used_ring->idx;
+
+        if (ramdisk_storage && is_write) {
+            memcpy(ramdisk_storage + (sector * SECTOR_SIZE), buf, SECTOR_SIZE);
+        }
+
+        if (req_status == VIRTIO_BLK_S_OK || ramdisk_storage) {
+            return 0;
+        }
+        kprintf("[VIRTIO:BLK] Hardware error status %u on sector %lu!\n", req_status, sector);
+        return -1;
+    }
+
+    if (ramdisk_storage) {
+        if (is_write) {
+            memcpy(ramdisk_storage + (sector * SECTOR_SIZE), buf, SECTOR_SIZE);
+        } else {
+            memcpy(buf, ramdisk_storage + (sector * SECTOR_SIZE), SECTOR_SIZE);
+        }
+        return 0;
+    }
+
+    return -1;
+}
+
+#include "irq.h"
+
 int virtio_blk_read(uint64_t sector, void *buffer, uint32_t sector_count) {
     if (!buffer || sector_count == 0) {
         return -1;
@@ -183,75 +287,17 @@ int virtio_blk_read(uint64_t sector, void *buffer, uint32_t sector_count) {
         return -1;
     }
 
-    /* If hardware block device is active, submit request to virtqueue */
-    if (blk_dev_base && desc_table && avail_ring && used_ring) {
-        static struct virtio_blk_req req;
-        static uint8_t req_status;
-
-        req.type = VIRTIO_BLK_T_IN;
-        req.reserved = 0;
-        req.sector = sector;
-        req_status = 0xFF;
-
-        /* Descriptor 0: Request Header (Device Reads) */
-        desc_table[0].addr = (uint64_t)&req;
-        desc_table[0].len = sizeof(struct virtio_blk_req);
-        desc_table[0].flags = VRING_DESC_F_NEXT;
-        desc_table[0].next = 1;
-
-        /* Descriptor 1: Data Buffer (Device Writes) */
-        desc_table[1].addr = (uint64_t)buffer;
-        desc_table[1].len = sector_count * SECTOR_SIZE;
-        desc_table[1].flags = VRING_DESC_F_NEXT | VRING_DESC_F_WRITE;
-        desc_table[1].next = 2;
-
-        /* Descriptor 2: Status Byte (Device Writes) */
-        desc_table[2].addr = (uint64_t)&req_status;
-        desc_table[2].len = 1;
-        desc_table[2].flags = VRING_DESC_F_WRITE;
-        desc_table[2].next = 0;
-
-        /* Put descriptor 0 in avail ring */
-        avail_ring->ring[avail_ring->idx % VIRTIO_QUEUE_SIZE] = 0;
-        __asm__ volatile("dmb sy" ::: "memory");
-        avail_ring->idx++;
-        __asm__ volatile("dmb sy" ::: "memory");
-
-        /* Notify queue 0 */
-        VIRTIO_REG(blk_dev_base, VIRTIO_MMIO_QUEUE_NOTIFY) = 0;
-
-        /* Poll for completion with safety timeout */
-        uint32_t timeout = 500000;
-        while (used_ring->idx == last_used_idx && --timeout) {
-            __asm__ volatile("nop");
+    irq_disable();
+    uint8_t *dst = (uint8_t *)buffer;
+    int res = 0;
+    for (uint32_t i = 0; i < sector_count; i++) {
+        if (virtio_blk_transfer_one(sector + i, dst + (i * SECTOR_SIZE), 0) != 0) {
+            res = -1;
+            break;
         }
-        if (timeout == 0) {
-            kprintf("[VIRTIO:BLK] Hardware read timeout, falling back to RAM storage.\n");
-            if (ramdisk_storage) {
-                memcpy(buffer, ramdisk_storage + (sector * SECTOR_SIZE), sector_count * SECTOR_SIZE);
-                return 0;
-            }
-            return -1;
-        }
-        last_used_idx = used_ring->idx;
-
-        if (req_status == VIRTIO_BLK_S_OK) {
-            return 0;
-        }
-        if (ramdisk_storage) {
-            memcpy(buffer, ramdisk_storage + (sector * SECTOR_SIZE), sector_count * SECTOR_SIZE);
-            return 0;
-        }
-        return -1;
     }
-
-    /* Fallback RAM disk storage */
-    if (ramdisk_storage) {
-        memcpy(buffer, ramdisk_storage + (sector * SECTOR_SIZE), sector_count * SECTOR_SIZE);
-        return 0;
-    }
-
-    return -1;
+    irq_enable();
+    return res;
 }
 
 int virtio_blk_write(uint64_t sector, const void *buffer, uint32_t sector_count) {
@@ -265,74 +311,17 @@ int virtio_blk_write(uint64_t sector, const void *buffer, uint32_t sector_count)
         return -1;
     }
 
-    /* If hardware block device is active, submit request to virtqueue */
-    if (blk_dev_base && desc_table && avail_ring && used_ring) {
-        static struct virtio_blk_req req;
-        static uint8_t req_status;
-
-        req.type = VIRTIO_BLK_T_OUT;
-        req.reserved = 0;
-        req.sector = sector;
-        req_status = 0xFF;
-
-        /* Descriptor 0: Request Header (Device Reads) */
-        desc_table[0].addr = (uint64_t)&req;
-        desc_table[0].len = sizeof(struct virtio_blk_req);
-        desc_table[0].flags = VRING_DESC_F_NEXT;
-        desc_table[0].next = 1;
-
-        /* Descriptor 1: Data Buffer (Device Reads) */
-        desc_table[1].addr = (uint64_t)buffer;
-        desc_table[1].len = sector_count * SECTOR_SIZE;
-        desc_table[1].flags = VRING_DESC_F_NEXT;
-        desc_table[1].next = 2;
-
-        /* Descriptor 2: Status Byte (Device Writes) */
-        desc_table[2].addr = (uint64_t)&req_status;
-        desc_table[2].len = 1;
-        desc_table[2].flags = VRING_DESC_F_WRITE;
-        desc_table[2].next = 0;
-
-        /* Put descriptor 0 in avail ring */
-        avail_ring->ring[avail_ring->idx % VIRTIO_QUEUE_SIZE] = 0;
-        __asm__ volatile("dmb sy" ::: "memory");
-        avail_ring->idx++;
-        __asm__ volatile("dmb sy" ::: "memory");
-
-        /* Notify queue 0 */
-        VIRTIO_REG(blk_dev_base, VIRTIO_MMIO_QUEUE_NOTIFY) = 0;
-
-        /* Poll for completion with safety timeout */
-        uint32_t timeout = 500000;
-        while (used_ring->idx == last_used_idx && --timeout) {
-            __asm__ volatile("nop");
+    irq_disable();
+    const uint8_t *src = (const uint8_t *)buffer;
+    int res = 0;
+    for (uint32_t i = 0; i < sector_count; i++) {
+        if (virtio_blk_transfer_one(sector + i, (void *)(src + (i * SECTOR_SIZE)), 1) != 0) {
+            res = -1;
+            break;
         }
-        if (timeout == 0) {
-            kprintf("[VIRTIO:BLK] Hardware write timeout, falling back to RAM storage.\n");
-            if (ramdisk_storage) {
-                memcpy(ramdisk_storage + (sector * SECTOR_SIZE), buffer, sector_count * SECTOR_SIZE);
-                return 0;
-            }
-            return -1;
-        }
-        last_used_idx = used_ring->idx;
-
-        if (ramdisk_storage) {
-            memcpy(ramdisk_storage + (sector * SECTOR_SIZE), buffer, sector_count * SECTOR_SIZE);
-        }
-        if (req_status == VIRTIO_BLK_S_OK || ramdisk_storage) {
-            return 0;
-        }
-        return -1;
     }
-
-    /* Fallback RAM disk storage */
-    if (ramdisk_storage) {
-        memcpy(ramdisk_storage + (sector * SECTOR_SIZE), buffer, sector_count * SECTOR_SIZE);
-        return 0;
-    }
-
-    return -1;
+    irq_enable();
+    return res;
 }
 
 uint64_t virtio_blk_get_capacity(void) {

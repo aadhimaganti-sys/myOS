@@ -9,8 +9,9 @@
 #define COIN_INITIAL_REWARD     50ULL
 #define COIN_BLOCK_REWARD       50ULL
 #define COIN_HALVING_INTERVAL   16
-#define COIN_MAX_SUPPLY         21000000ULL
+#define COIN_MAX_SUPPLY         0xFFFFFFFFFFFFFFFFULL
 #define COIN_MAX_BLOCK_TX       8
+#define COIN_DISK_SAVED_BLOCKS  64
 #define COIN_MAX_CHAIN_LEN      64
 #define COIN_MAX_WALLETS        32
 #define COIN_ADDR_LEN           24
@@ -50,14 +51,17 @@ struct coin_wallet {
 
 /* Core Blockchain & Consensus Engine */
 void coin_init(void);
+void coin_restart(void);
 struct coin_wallet *coin_get_my_wallet(void);
 struct coin_wallet *coin_find_wallet(const char *address);
 struct coin_wallet *coin_create_wallet(const char *label);
+int  coin_remove_wallet(const char *target);
 int  coin_switch_wallet(const char *address);
 uint64_t coin_get_balance(const char *address);
 int  coin_send(const char *to_address, uint64_t amount);
 int  coin_send_with_fee(const char *to_address, uint64_t amount, uint64_t fee);
 int  coin_mine_block(void);
+int  coin_mine_block_silent(void);
 int  coin_mine_blocks(uint32_t count);
 int  coin_verify_chain(void);
 

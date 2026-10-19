@@ -253,17 +253,21 @@ void wm_init(void) {
         windows[i].is_maximized = 0;
     }
 
+    struct framebuffer *fb = fb_get_info();
+    int sw = (fb && fb->width) ? (int)fb->width : 1024;
+    int sh = (fb && fb->height) ? (int)fb->height : 768;
+
     /* 1. Terminal Window (Centered Floating Window, Open by Default) */
     windows[WIN_TERMINAL].id = WIN_TERMINAL;
     windows[WIN_TERMINAL].title = "Terminal Console [Interactive]";
-    windows[WIN_TERMINAL].x = 100;
-    windows[WIN_TERMINAL].y = 50;
-    windows[WIN_TERMINAL].w = 460;
-    windows[WIN_TERMINAL].h = 260;
-    windows[WIN_TERMINAL].orig_x = 100;
-    windows[WIN_TERMINAL].orig_y = 50;
-    windows[WIN_TERMINAL].orig_w = 460;
-    windows[WIN_TERMINAL].orig_h = 260;
+    windows[WIN_TERMINAL].x = 50;
+    windows[WIN_TERMINAL].y = 45;
+    windows[WIN_TERMINAL].w = (sw > 800) ? 760 : 460;
+    windows[WIN_TERMINAL].h = (sh > 600) ? 460 : 260;
+    windows[WIN_TERMINAL].orig_x = windows[WIN_TERMINAL].x;
+    windows[WIN_TERMINAL].orig_y = windows[WIN_TERMINAL].y;
+    windows[WIN_TERMINAL].orig_w = windows[WIN_TERMINAL].w;
+    windows[WIN_TERMINAL].orig_h = windows[WIN_TERMINAL].h;
     windows[WIN_TERMINAL].is_visible = 1;
     windows[WIN_TERMINAL].is_focused = 1;
     windows[WIN_TERMINAL].render = render_terminal_window;
@@ -271,12 +275,12 @@ void wm_init(void) {
     /* 2. On-Screen Virtual Keyboard (Floating) */
     windows[WIN_KEYBOARD].id = WIN_KEYBOARD;
     windows[WIN_KEYBOARD].title = "On-Screen Virtual Keyboard [Interactive]";
-    windows[WIN_KEYBOARD].x = 95;
-    windows[WIN_KEYBOARD].y = 240;
+    windows[WIN_KEYBOARD].x = 50;
+    windows[WIN_KEYBOARD].y = (sh > 600) ? (sh - 230) : 240;
     windows[WIN_KEYBOARD].w = 450;
     windows[WIN_KEYBOARD].h = 194;
-    windows[WIN_KEYBOARD].orig_x = 95;
-    windows[WIN_KEYBOARD].orig_y = 240;
+    windows[WIN_KEYBOARD].orig_x = windows[WIN_KEYBOARD].x;
+    windows[WIN_KEYBOARD].orig_y = windows[WIN_KEYBOARD].y;
     windows[WIN_KEYBOARD].orig_w = 450;
     windows[WIN_KEYBOARD].orig_h = 194;
     windows[WIN_KEYBOARD].render = render_keyboard_window;
@@ -284,12 +288,12 @@ void wm_init(void) {
     /* 3. Calculator (Floating App) */
     windows[WIN_CALC].id = WIN_CALC;
     windows[WIN_CALC].title = "Calculator";
-    windows[WIN_CALC].x = 230;
-    windows[WIN_CALC].y = 100;
+    windows[WIN_CALC].x = (sw > 800) ? 780 : 230;
+    windows[WIN_CALC].y = 60;
     windows[WIN_CALC].w = 176;
     windows[WIN_CALC].h = 224;
-    windows[WIN_CALC].orig_x = 230;
-    windows[WIN_CALC].orig_y = 100;
+    windows[WIN_CALC].orig_x = windows[WIN_CALC].x;
+    windows[WIN_CALC].orig_y = windows[WIN_CALC].y;
     windows[WIN_CALC].orig_w = 176;
     windows[WIN_CALC].orig_h = 224;
     windows[WIN_CALC].render = render_calc_window;
@@ -297,27 +301,27 @@ void wm_init(void) {
     /* 4. Files Explorer (Floating App) */
     windows[WIN_FILES].id = WIN_FILES;
     windows[WIN_FILES].title = "RAMFS File Explorer";
-    windows[WIN_FILES].x = 160;
+    windows[WIN_FILES].x = 100;
     windows[WIN_FILES].y = 70;
-    windows[WIN_FILES].w = 340;
-    windows[WIN_FILES].h = 230;
-    windows[WIN_FILES].orig_x = 160;
-    windows[WIN_FILES].orig_y = 70;
-    windows[WIN_FILES].orig_w = 340;
-    windows[WIN_FILES].orig_h = 230;
+    windows[WIN_FILES].w = (sw > 800) ? 500 : 340;
+    windows[WIN_FILES].h = (sh > 600) ? 360 : 230;
+    windows[WIN_FILES].orig_x = windows[WIN_FILES].x;
+    windows[WIN_FILES].orig_y = windows[WIN_FILES].y;
+    windows[WIN_FILES].orig_w = windows[WIN_FILES].w;
+    windows[WIN_FILES].orig_h = windows[WIN_FILES].h;
     windows[WIN_FILES].render = render_files_window;
 
-    /* 5. Hardware Device Drivers Manager */
+    /* 5. Hardware Device Drivers Manager (VS Code Scale) */
     windows[WIN_DRIVERS].id = WIN_DRIVERS;
-    windows[WIN_DRIVERS].title = "Hardware Device Drivers Manager";
-    windows[WIN_DRIVERS].x = 30;
-    windows[WIN_DRIVERS].y = 50;
-    windows[WIN_DRIVERS].w = 580;
-    windows[WIN_DRIVERS].h = 270;
-    windows[WIN_DRIVERS].orig_x = 30;
-    windows[WIN_DRIVERS].orig_y = 50;
-    windows[WIN_DRIVERS].orig_w = 580;
-    windows[WIN_DRIVERS].orig_h = 270;
+    windows[WIN_DRIVERS].title = "Hardware Device Drivers Manager [VS Code Scale]";
+    windows[WIN_DRIVERS].x = 35;
+    windows[WIN_DRIVERS].y = 35;
+    windows[WIN_DRIVERS].w = (sw > 800) ? (sw - 70) : 580;
+    windows[WIN_DRIVERS].h = (sh > 600) ? (sh - 70) : 270;
+    windows[WIN_DRIVERS].orig_x = windows[WIN_DRIVERS].x;
+    windows[WIN_DRIVERS].orig_y = windows[WIN_DRIVERS].y;
+    windows[WIN_DRIVERS].orig_w = windows[WIN_DRIVERS].w;
+    windows[WIN_DRIVERS].orig_h = windows[WIN_DRIVERS].h;
     windows[WIN_DRIVERS].render = render_drivers_window;
 
     /* 6. System Monitor */
@@ -581,9 +585,14 @@ void wm_handle_mouse(int x, int y, int buttons) {
 
     if (left_just_pressed) {
         /* A. Check Start Menu if open */
+        struct framebuffer *fb_info = fb_get_info();
+        int cur_sh = (fb_info && fb_info->height) ? (int)fb_info->height : 768;
+        int bar_top_y = cur_sh - 24;
+        int menu_top_y = bar_top_y - 246;
+
         if (start_menu_open) {
-            if (x >= 4 && x <= 186 && y >= 206 && y <= 452) {
-                int item_idx = (y - 232) / 18;
+            if (x >= 4 && x <= 186 && y >= menu_top_y && y <= bar_top_y) {
+                int item_idx = (y - (menu_top_y + 26)) / 18;
                 if (item_idx == 0) wm_open_window(WIN_TERMINAL);
                 else if (item_idx == 1) wm_open_window(WIN_KEYBOARD);
                 else if (item_idx == 2) wm_open_window(WIN_CALC);
@@ -598,13 +607,13 @@ void wm_handle_mouse(int x, int y, int buttons) {
                 start_menu_open = 0;
                 last_mouse_buttons = buttons;
                 return;
-            } else if (y < 456 || x > 70) {
+            } else if (y < bar_top_y || x > 70) {
                 start_menu_open = 0;
             }
         }
 
-        /* B. Check Bottom Taskbar Clicks (y >= 456) */
-        if (y >= 456) {
+        /* B. Check Bottom Taskbar Clicks */
+        if (y >= bar_top_y) {
             if (x >= 4 && x <= 68) {
                 wm_toggle_start_menu();
                 last_mouse_buttons = buttons;
@@ -841,9 +850,9 @@ void wm_handle_mouse(int x, int y, int buttons) {
         int new_y = win_orig_y + (y - drag_start_y);
 
         if (new_x < 0) new_x = 0;
-        if (new_x + w->w > 640) new_x = 640 - w->w;
+        struct framebuffer *fb_d = fb_get_info(); int d_sw = (fb_d && fb_d->width)?(int)fb_d->width:1024; int d_sh = (fb_d && fb_d->height)?(int)fb_d->height:768; if (new_x + w->w > d_sw) new_x = d_sw - w->w;
         if (new_y < 24) new_y = 24;
-        if (new_y + w->h > 456) new_y = 456 - w->h;
+        if (new_y + w->h > d_sh - 24) new_y = d_sh - 24 - w->h;
 
         w->x = new_x;
         w->y = new_y;
@@ -1346,12 +1355,13 @@ static void render_kitkoin_window(struct wm_window *w) {
     snprintf(addr_str, sizeof(addr_str), "Wallet: %s (%s)", my_w ? my_w->address : "N/A", my_w ? my_w->label : "Node");
     fb_draw_string(cx + 8, cy + 6, addr_str, COLOR_CYAN, 0x001B2631);
 
+
     char bal_str[36];
     snprintf(bal_str, sizeof(bal_str), "Balance: %lu KIT", my_w ? my_w->balance : 0);
     fb_draw_string(cx + 8, cy + 24, bal_str, COLOR_GOOGLE_GREEN, 0x001B2631);
 
     char halving_badge[32];
-    snprintf(halving_badge, sizeof(halving_badge), "Halving: in %u blks", coin_get_blocks_until_halving());
+    snprintf(halving_badge, sizeof(halving_badge), "Reward: 50 KIT/blk");
     fb_draw_string(cx + cw - 165, cy + 24, halving_badge, COLOR_GOOGLE_YELLOW, 0x001B2631);
     cy += 52;
 
@@ -1402,10 +1412,12 @@ static void render_kitkoin_window(struct wm_window *w) {
 }
 
 static void render_start_menu(void) {
+    struct framebuffer *fb = fb_get_info();
+    int screen_h = (fb && fb->height) ? (int)fb->height : 768;
     int sx = 4;
-    int sy = 206;
     int sw = 186;
     int sh = 246;
+    int sy = screen_h - 24 - sh;
 
     fb_fill_rect(sx, sy, sw, sh, COLOR_PANEL_BG);
     fb_draw_rect(sx, sy, sw, sh, COLOR_GOOGLE_BLUE);
@@ -1454,18 +1466,22 @@ void wm_render(void) {
         fb_draw_string(ic->x + 42, ic->y + 14, ic->name, COLOR_TEXT_WHITE, COLOR_DESKTOP_BG);
     }
 
+    struct framebuffer *fb = fb_get_info();
+    uint32_t screen_w = (fb && fb->width) ? fb->width : 1024;
+    uint32_t screen_h = (fb && fb->height) ? fb->height : 768;
+
     /* 2. Top Taskbar */
-    fb_fill_rect(0, 0, 640, 24, COLOR_TOPBAR_BG);
-    fb_draw_line(0, 24, 640, 24, COLOR_PANEL_BORDER);
+    fb_fill_rect(0, 0, screen_w, 24, COLOR_TOPBAR_BG);
+    fb_draw_line(0, 24, screen_w, 24, COLOR_PANEL_BORDER);
 
     fb_draw_badge(8, 4, "myOS", COLOR_WHITE, COLOR_GOOGLE_BLUE);
-    fb_draw_string(60, 8, "Google Antigravity OS - Desktop", COLOR_TEXT_WHITE, COLOR_TOPBAR_BG);
+    fb_draw_string(60, 8, "Google Antigravity OS - Desktop [1024x768]", COLOR_TEXT_WHITE, COLOR_TOPBAR_BG);
 
     /* Top bar indicators */
     char top_stat[64];
     snprintf(top_stat, sizeof(top_stat), "DRV: 11 Live | RAM Free: %lu KB | Up: %lu s",
              mm_get_free_pages() * 4, timer_get_ticks() / 100);
-    fb_draw_string(320, 8, top_stat, COLOR_TEXT_MUTED, COLOR_TOPBAR_BG);
+    fb_draw_string(screen_w - 380, 8, top_stat, COLOR_TEXT_MUTED, COLOR_TOPBAR_BG);
 
     /* 3. Render Windows (Non-focused first, then focused on top) */
     for (int i = 0; i < WM_MAX_WINDOWS; i++) {
@@ -1480,11 +1496,12 @@ void wm_render(void) {
     }
 
     /* 4. Bottom Taskbar with Quick Launch and Hardware Driver Status */
-    fb_fill_rect(0, 456, 640, 24, COLOR_STATUSBAR_BG);
-    fb_draw_line(0, 456, 640, 456, COLOR_PANEL_BORDER);
+    uint32_t bar_y = screen_h - 24;
+    fb_fill_rect(0, bar_y, screen_w, 24, COLOR_STATUSBAR_BG);
+    fb_draw_line(0, bar_y, screen_w, bar_y, COLOR_PANEL_BORDER);
 
     /* Start Button */
-    fb_draw_badge(4, 459, " START ", COLOR_WHITE, start_menu_open ? COLOR_GOOGLE_YELLOW : COLOR_GOOGLE_BLUE);
+    fb_draw_badge(4, bar_y + 3, " START ", COLOR_WHITE, start_menu_open ? COLOR_GOOGLE_YELLOW : COLOR_GOOGLE_BLUE);
 
     /* Dynamic Taskbar App Tabs for Open Windows */
     int tab_x = 74;
@@ -1499,8 +1516,8 @@ void wm_render(void) {
             } else {
                 tab_bg = COLOR_PANEL_HEADER;
             }
-            fb_fill_rect(tab_x, 459, tab_w, 18, tab_bg);
-            fb_draw_rect(tab_x, 459, tab_w, 18, COLOR_PANEL_BORDER);
+            fb_fill_rect(tab_x, bar_y + 3, tab_w, 18, tab_bg);
+            fb_draw_rect(tab_x, bar_y + 3, tab_w, 18, COLOR_PANEL_BORDER);
 
             const char *slabel = "Window";
             if (i == WIN_TERMINAL) slabel = "Term";
@@ -1519,7 +1536,7 @@ void wm_render(void) {
             } else {
                 snprintf(tab_text, sizeof(tab_text), " %s", slabel);
             }
-            fb_draw_string(tab_x + 4, 464, tab_text, COLOR_WHITE, tab_bg);
+            fb_draw_string(tab_x + 4, bar_y + 8, tab_text, COLOR_WHITE, tab_bg);
 
             tab_x += tab_w + 4;
         }
@@ -1533,12 +1550,12 @@ void wm_render(void) {
     char clock_buf[12];
     snprintf(clock_buf, sizeof(clock_buf), "%02u:%02u:%02u", hours, mins, secs);
 
-    fb_fill_rect(564, 459, 72, 18, 0x001B2430);
-    fb_draw_rect(564, 459, 72, 18, COLOR_PANEL_BORDER);
-    fb_draw_string(570, 464, clock_buf, COLOR_GOOGLE_GREEN, 0x001B2430);
+    fb_fill_rect(screen_w - 76, bar_y + 3, 72, 18, 0x001B2430);
+    fb_draw_rect(screen_w - 76, bar_y + 3, 72, 18, COLOR_PANEL_BORDER);
+    fb_draw_string(screen_w - 70, bar_y + 8, clock_buf, COLOR_GOOGLE_GREEN, 0x001B2430);
 
     /* Real-Time Hardware Driver Status Badge */
-    fb_draw_badge(500, 459, "HID LIVE", COLOR_BLACK, COLOR_GOOGLE_GREEN);
+    fb_draw_badge(screen_w - 150, bar_y + 3, "HID LIVE", COLOR_BLACK, COLOR_GOOGLE_GREEN);
 
     /* 5. Render Popup Start Menu if open */
     if (start_menu_open) {

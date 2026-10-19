@@ -3,12 +3,13 @@
 #include "printf.h"
 #include "string.h"
 #include "mm.h"
+#include "fb.h"
 
 #define VIRTIO_REG(base, offset) (*(volatile uint32_t *)((base) + (offset)))
 #define VIRTIO_REG64(base, offset) (*(volatile uint64_t *)((base) + (offset)))
 
 #define MAX_INPUT_DEVICES 4
-#define INPUT_QUEUE_SIZE  16
+#define INPUT_QUEUE_SIZE  64
 #define KBD_BUFFER_SIZE   256
 
 struct virtio_input_dev {
@@ -210,27 +211,27 @@ void input_register_device(uintptr_t base) {
     }
     VIRTIO_REG(base, VIRTIO_MMIO_QUEUE_NUM) = qnum;
 
-    /* Allocate physically contiguous page for descriptors, avail ring, used ring, and events */
-    void *queue_mem = alloc_page();
+    /* Allocate physically contiguous memory (2 pages) for descriptors, avail ring, used ring, and events */
+    void *queue_mem = alloc_pages(2);
     if (!queue_mem) {
-        kprintf("[VIRTIO:INPUT] Failed to allocate queue page!\n");
+        kprintf("[VIRTIO:INPUT] Failed to allocate queue pages!\n");
         VIRTIO_REG(base, VIRTIO_MMIO_STATUS) |= VIRTIO_STATUS_FAILED;
         return;
     }
-    memset(queue_mem, 0, PAGE_SIZE);
+    memset(queue_mem, 0, PAGE_SIZE * 2);
 
     struct vring_desc *desc = (struct vring_desc *)queue_mem;
     struct vring_avail *avail = (struct vring_avail *)((uintptr_t)queue_mem + (qnum * sizeof(struct vring_desc)));
-    uintptr_t used_addr = ((uintptr_t)avail + sizeof(struct vring_avail) + 63) & ~63ULL;
+    uintptr_t used_addr = (uintptr_t)queue_mem + 4096;
     struct vring_used *used = (struct vring_used *)used_addr;
-    uintptr_t events_addr = (used_addr + sizeof(struct vring_used) + 63) & ~63ULL;
+    uintptr_t events_addr = used_addr + 1024;
     struct virtio_input_event *events = (struct virtio_input_event *)events_addr;
 
     /* Program queue physical addresses into MMIO registers depending on VirtIO version */
     uint32_t version = VIRTIO_REG(base, VIRTIO_MMIO_VERSION);
     if (version == 1) {
         VIRTIO_REG(base, VIRTIO_MMIO_GUEST_PAGE_SIZE) = 4096;
-        VIRTIO_REG(base, VIRTIO_MMIO_QUEUE_ALIGN) = 64;
+        VIRTIO_REG(base, VIRTIO_MMIO_QUEUE_ALIGN) = 4096;
         VIRTIO_REG(base, VIRTIO_MMIO_QUEUE_PFN) = (uint32_t)(((uint64_t)queue_mem) >> 12);
     } else {
         VIRTIO_REG(base, VIRTIO_MMIO_QUEUE_DESC_LOW) = (uint32_t)((uint64_t)desc);
@@ -245,7 +246,7 @@ void input_register_device(uintptr_t base) {
         VIRTIO_REG(base, VIRTIO_MMIO_QUEUE_READY) = 1;
     }
 
-    /* Pre-populate Queue 0 with 16 event buffers (VRING_DESC_F_WRITE), add to avail_ring, notify queue */
+    /* Pre-populate Queue 0 with event buffers (VRING_DESC_F_WRITE), add to avail_ring */
     for (uint32_t i = 0; i < qnum; i++) {
         desc[i].addr = (uint64_t)&events[i];
         desc[i].len = sizeof(struct virtio_input_event);
@@ -253,16 +254,17 @@ void input_register_device(uintptr_t base) {
         desc[i].next = 0;
         avail->ring[i] = (uint16_t)i;
     }
-    __asm__ volatile("dmb sy" ::: "memory");
     avail->flags = 0;
     avail->idx = (uint16_t)qnum;
     __asm__ volatile("dmb sy" ::: "memory");
 
-    /* Notify queue 0 */
-    VIRTIO_REG(base, VIRTIO_MMIO_QUEUE_NOTIFY) = 0;
-
-    /* 7. Set DRIVER_OK */
+    /* 7. Set DRIVER_OK first so device is authorized to process queue events */
     VIRTIO_REG(base, VIRTIO_MMIO_STATUS) |= VIRTIO_STATUS_DRIVER_OK;
+    __asm__ volatile("dmb sy" ::: "memory");
+
+    /* 8. Notify queue 0 AFTER DRIVER_OK */
+    VIRTIO_REG(base, VIRTIO_MMIO_QUEUE_NOTIFY) = 0;
+    __asm__ volatile("dmb sy" ::: "memory");
 
     /* Query ABS_INFO if tablet/touch absolute pointer */
     uint32_t min_x = 0, max_x = 32767;
@@ -319,6 +321,10 @@ void input_register_device(uintptr_t base) {
 }
 
 void input_poll(void) {
+    struct framebuffer *fb = fb_get_info();
+    uint32_t screen_w = (fb && fb->width) ? fb->width : 1024;
+    uint32_t screen_h = (fb && fb->height) ? fb->height : 768;
+
     for (int d = 0; d < num_input_devices; d++) {
         struct virtio_input_dev *dev = &input_devices[d];
         if (!dev->active || !dev->used_ring) {
@@ -340,28 +346,28 @@ void input_poll(void) {
                         uint64_t span_x = (dev->abs_max_x > dev->abs_min_x) ? (dev->abs_max_x - dev->abs_min_x) : 32767ULL;
                         int64_t raw_rel = (int64_t)ev.value - (int64_t)dev->abs_min_x;
                         if (raw_rel < 0) raw_rel = 0;
-                        int val = (int)((raw_rel * 640ULL) / span_x);
+                        int val = (int)((raw_rel * (uint64_t)screen_w) / span_x);
                         if (val < 0) val = 0;
-                        if (val > 639) val = 639;
+                        if ((uint32_t)val >= screen_w) val = screen_w - 1;
                         mouse_x = val;
                     } else if (ev.code == ABS_Y) {
                         uint64_t span_y = (dev->abs_max_y > dev->abs_min_y) ? (dev->abs_max_y - dev->abs_min_y) : 32767ULL;
                         int64_t raw_rel = (int64_t)ev.value - (int64_t)dev->abs_min_y;
                         if (raw_rel < 0) raw_rel = 0;
-                        int val = (int)((raw_rel * 480ULL) / span_y);
+                        int val = (int)((raw_rel * (uint64_t)screen_h) / span_y);
                         if (val < 0) val = 0;
-                        if (val > 479) val = 479;
+                        if ((uint32_t)val >= screen_h) val = screen_h - 1;
                         mouse_y = val;
                     }
                 } else if (ev.type == EV_REL) {
                     if (ev.code == REL_X) {
                         mouse_x += (int32_t)ev.value;
                         if (mouse_x < 0) mouse_x = 0;
-                        if (mouse_x > 639) mouse_x = 639;
+                        if ((uint32_t)mouse_x >= screen_w) mouse_x = screen_w - 1;
                     } else if (ev.code == REL_Y) {
                         mouse_y += (int32_t)ev.value;
                         if (mouse_y < 0) mouse_y = 0;
-                        if (mouse_y > 479) mouse_y = 479;
+                        if ((uint32_t)mouse_y >= screen_h) mouse_y = screen_h - 1;
                     } else if (ev.code == REL_WHEEL) {
                         mouse_wheel += (int32_t)ev.value;
                     }

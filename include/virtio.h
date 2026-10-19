@@ -73,7 +73,7 @@ struct virtio_input_absinfo {
 #define VRING_DESC_F_NEXT               1
 #define VRING_DESC_F_WRITE              2
 
-#define VIRTIO_QUEUE_SIZE               16
+#define VIRTIO_QUEUE_SIZE               128
 
 struct vring_desc {
     uint64_t addr;

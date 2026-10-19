@@ -8,10 +8,32 @@
 #include "p2p.h"
 #include "virtio.h"
 #include "ramfs.h"
+#include "mm.h"
 
 #define COIN_DISK_MAGIC        0x4B49544B4F494E31ULL /* "KITKOIN1" */
-#define COIN_DISK_VERSION      1
+#define COIN_DISK_VERSION      2
 #define COIN_DISK_START_SECTOR 16
+
+struct coin_wallet_v1 {
+    char address[COIN_ADDR_LEN];
+    char label[32];
+    uint64_t balance;
+    uint32_t tx_count;
+    int is_active;
+};
+
+struct coin_disk_state_v1 {
+    uint64_t magic;
+    uint32_t version;
+    uint32_t wallet_count;
+    uint32_t my_wallet_index;
+    struct coin_wallet_v1 wallets[COIN_MAX_WALLETS];
+    uint32_t chain_height;
+    struct coin_block chain[COIN_MAX_CHAIN_LEN];
+    uint32_t mempool_count;
+    struct coin_tx mempool[COIN_MAX_BLOCK_TX];
+    uint32_t checksum;
+};
 
 struct coin_disk_state {
     uint64_t magic;
@@ -24,12 +46,52 @@ struct coin_disk_state {
     uint32_t mempool_count;
     struct coin_tx mempool[COIN_MAX_BLOCK_TX];
     uint32_t checksum;
-};
+} __attribute__((packed));
 
 static struct coin_disk_state disk_io_buffer;
 
-static struct coin_block chain[COIN_MAX_CHAIN_LEN];
+static struct coin_block **chain = NULL;
+static uint32_t chain_capacity = 0;
 static uint32_t chain_height = 0;
+static uint8_t last_block_hash[32];
+
+static int ensure_chain_capacity(uint32_t needed) {
+    if (needed <= chain_capacity && chain != NULL) {
+        return 0;
+    }
+    uint32_t new_cap = (chain_capacity == 0) ? 64 : chain_capacity * 2;
+    while (new_cap < needed) {
+        new_cap *= 2;
+    }
+    struct coin_block **new_chain = (struct coin_block **)kmalloc(new_cap * sizeof(struct coin_block *));
+    if (!new_chain) {
+        kprintf("[KitKoin:ERR] Out of memory expanding blockchain table to %u capacity!\n", new_cap);
+        return -1;
+    }
+    memset(new_chain, 0, new_cap * sizeof(struct coin_block *));
+    if (chain && chain_capacity > 0) {
+        memcpy(new_chain, chain, chain_capacity * sizeof(struct coin_block *));
+        kfree(chain);
+    }
+    chain = new_chain;
+    chain_capacity = new_cap;
+    return 0;
+}
+
+static struct coin_block *allocate_new_block(uint32_t height) {
+    if (ensure_chain_capacity(height + 1) != 0) {
+        return NULL;
+    }
+    if (chain[height] == NULL) {
+        chain[height] = (struct coin_block *)kmalloc(sizeof(struct coin_block));
+        if (!chain[height]) {
+            kprintf("[KitKoin:ERR] Failed to allocate memory for block #%u!\n", height);
+            return NULL;
+        }
+    }
+    memset(chain[height], 0, sizeof(struct coin_block));
+    return chain[height];
+}
 
 static struct coin_tx mempool[COIN_MAX_BLOCK_TX];
 static uint32_t mempool_count = 0;
@@ -100,8 +162,9 @@ static int meets_difficulty(const uint8_t hash[32], uint32_t diff) {
 
 uint64_t coin_get_block_reward(uint32_t height) {
     uint32_t halvings = height / COIN_HALVING_INTERVAL;
-    if (halvings >= 64) return 0;
-    return COIN_INITIAL_REWARD >> halvings;
+    if (halvings >= 64) return 1ULL;
+    uint64_t reward = COIN_INITIAL_REWARD >> halvings;
+    return (reward > 0) ? reward : 1ULL;
 }
 
 uint32_t coin_get_blocks_until_halving(void) {
@@ -162,14 +225,146 @@ struct coin_wallet *coin_create_wallet(const char *label) {
     return w;
 }
 
+static int str_ieq(const char *a, const char *b) {
+    if (!a || !b) return 0;
+    while (*a && *b) {
+        char ca = (*a >= 'A' && *a <= 'Z') ? (*a + 32) : *a;
+        char cb = (*b >= 'A' && *b <= 'Z') ? (*b + 32) : *b;
+        if (ca != cb) return 0;
+        a++;
+        b++;
+    }
+    return (*a == '\0' && *b == '\0');
+}
+
+static int edit_distance(const char *s1, const char *s2) {
+    int len1 = strlen(s1);
+    int len2 = strlen(s2);
+    int dp[33][33];
+    if (len1 > 32) len1 = 32;
+    if (len2 > 32) len2 = 32;
+    for (int i = 0; i <= len1; i++) dp[i][0] = i;
+    for (int j = 0; j <= len2; j++) dp[0][j] = j;
+    for (int i = 1; i <= len1; i++) {
+        for (int j = 1; j <= len2; j++) {
+            char c1 = (s1[i-1] >= 'A' && s1[i-1] <= 'Z') ? (s1[i-1] + 32) : s1[i-1];
+            char c2 = (s2[j-1] >= 'A' && s2[j-1] <= 'Z') ? (s2[j-1] + 32) : s2[j-1];
+            int cost = (c1 == c2) ? 0 : 1;
+            int del = dp[i-1][j] + 1;
+            int ins = dp[i][j-1] + 1;
+            int sub = dp[i-1][j-1] + cost;
+            int min = del < ins ? del : ins;
+            dp[i][j] = min < sub ? min : sub;
+        }
+    }
+    return dp[len1][len2];
+}
+
+int coin_remove_wallet(const char *target) {
+    if (!target) return -1;
+    if (wallet_count == 0) return -1;
+
+    int match_idx = -1;
+    int best_dist = 99;
+
+    /* 1. Try exact address or label match (case-insensitive) */
+    for (uint32_t i = 0; i < wallet_count; i++) {
+        if (!wallets[i].is_active) continue;
+        if (strcmp(wallets[i].address, target) == 0 || str_ieq(wallets[i].label, target)) {
+            match_idx = (int)i;
+            break;
+        }
+    }
+
+    /* 2. If no exact match, try typo-tolerant match (edit distance <= 2) */
+    if (match_idx < 0) {
+        for (uint32_t i = 0; i < wallet_count; i++) {
+            if (!wallets[i].is_active) continue;
+            int d = edit_distance(wallets[i].label, target);
+            if (d <= 2 && d < best_dist) {
+                best_dist = d;
+                match_idx = (int)i;
+            }
+        }
+    }
+
+    if (match_idx < 0) {
+        kprintf("[KitKoin:ERR] Wallet profile '%s' not found!\n", target);
+        return -1;
+    }
+
+    /* Prevent deleting if it's the last remaining wallet */
+    uint32_t active_count = 0;
+    for (uint32_t i = 0; i < wallet_count; i++) {
+        if (wallets[i].is_active) active_count++;
+    }
+    if (active_count <= 1) {
+        kprintf("[KitKoin:ERR] Cannot remove the sole remaining wallet profile (%s)!\n",
+                wallets[match_idx].label);
+        return -1;
+    }
+
+    char removed_label[32];
+    char removed_addr[COIN_ADDR_LEN];
+    uint64_t removed_bal = wallets[match_idx].balance;
+    strncpy(removed_label, wallets[match_idx].label, sizeof(removed_label) - 1);
+    strncpy(removed_addr, wallets[match_idx].address, sizeof(removed_addr) - 1);
+
+    wallets[match_idx].is_active = 0;
+
+    /* If removing currently active wallet, switch to first available active wallet */
+    if ((uint32_t)match_idx == (uint32_t)my_wallet_index) {
+        for (uint32_t i = 0; i < wallet_count; i++) {
+            if (wallets[i].is_active) {
+                my_wallet_index = (int)i;
+                break;
+            }
+        }
+    }
+
+    coin_save();
+
+    kprintf("[+] Successfully removed KitKoin wallet profile!\n");
+    kprintf("    Label:     %s\n", removed_label);
+    kprintf("    Address:   %s\n", removed_addr);
+    if (removed_bal > 0) {
+        kprintf("    Note:      Wallet contained %lu KIT.\n", removed_bal);
+    }
+    kprintf("    Active:    Switched to %s (%s)\n",
+            wallets[my_wallet_index].address, wallets[my_wallet_index].label);
+    return 0;
+}
+
 int coin_switch_wallet(const char *address) {
     if (!address) return -1;
+    int match_idx = -1;
+    int best_dist = 99;
+
+    /* 1. Try exact address or label match (case-insensitive) */
     for (uint32_t i = 0; i < wallet_count; i++) {
-        if (wallets[i].is_active && strcmp(wallets[i].address, address) == 0) {
-            my_wallet_index = i;
-            coin_save();
-            return 0;
+        if (!wallets[i].is_active) continue;
+        if (strcmp(wallets[i].address, address) == 0 || str_ieq(wallets[i].label, address)) {
+            match_idx = (int)i;
+            break;
         }
+    }
+
+    /* 2. Try typo-tolerant label match (edit distance <= 2) */
+    if (match_idx < 0) {
+        for (uint32_t i = 0; i < wallet_count; i++) {
+            if (!wallets[i].is_active) continue;
+            int d = edit_distance(wallets[i].label, address);
+            if (d <= 2 && d < best_dist) {
+                best_dist = d;
+                match_idx = (int)i;
+            }
+        }
+    }
+
+    if (match_idx >= 0) {
+        my_wallet_index = match_idx;
+        coin_save();
+        return 0;
     }
     return -1;
 }
@@ -190,8 +385,8 @@ struct coin_wallet *coin_get_wallet_by_index(uint32_t idx) {
 }
 
 struct coin_block *coin_get_block(uint32_t height) {
-    if (height < chain_height) {
-        return &chain[height];
+    if (chain && height < chain_height && height < chain_capacity) {
+        return chain[height];
     }
     return NULL;
 }
@@ -293,14 +488,17 @@ int coin_send(const char *to_address, uint64_t amount) {
 }
 
 int coin_mine_block(void) {
-    if (chain_height >= COIN_MAX_CHAIN_LEN) {
-        kprintf("[KitKoin:ERR] Blockchain reached max capacity (%d blocks)!\n", COIN_MAX_CHAIN_LEN);
+    struct coin_wallet *miner_w = coin_get_my_wallet();
+    if (!miner_w) {
+        kprintf("[KitKoin:ERR] No active mining wallet found!\n");
         return -1;
     }
 
-    struct coin_wallet *miner_w = coin_get_my_wallet();
-    struct coin_block *new_b = &chain[chain_height];
-    memset(new_b, 0, sizeof(struct coin_block));
+    struct coin_block *new_b = allocate_new_block(chain_height);
+    if (!new_b) {
+        kprintf("[KitKoin:ERR] Cannot mine block: out of memory allocating block #%u!\n", chain_height);
+        return -1;
+    }
 
     new_b->index = chain_height;
     new_b->timestamp = timer_get_ticks();
@@ -310,7 +508,7 @@ int coin_mine_block(void) {
 
     /* Previous block hash linkage */
     if (chain_height > 0) {
-        memcpy(new_b->prev_hash, chain[chain_height - 1].block_hash, 32);
+        memcpy(new_b->prev_hash, last_block_hash, 32);
     } else {
         memset(new_b->prev_hash, 0, 32);
     }
@@ -398,6 +596,7 @@ int coin_mine_block(void) {
 
     /* 5. Clear mined transactions from mempool */
     mempool_count = 0;
+    memcpy(last_block_hash, new_b->block_hash, 32);
     chain_height++;
 
     /* 6. Broadcast newly mined block to local Wi-Fi P2P network */
@@ -436,7 +635,11 @@ int coin_verify_chain(void) {
     uint64_t total_minted_rewards = 0;
 
     for (uint32_t i = 0; i < chain_height; i++) {
-        struct coin_block *b = &chain[i];
+        struct coin_block *b = coin_get_block(i);
+        if (!b) {
+            kprintf("[FAIL] Block #%u cannot be loaded from memory!\n", i);
+            return 0;
+        }
         uint8_t recalculated_hash[32];
         compute_block_hash(b, recalculated_hash);
 
@@ -451,7 +654,8 @@ int coin_verify_chain(void) {
         }
 
         if (i > 0) {
-            if (memcmp(b->prev_hash, chain[i - 1].block_hash, 32) != 0) {
+            struct coin_block *prev = coin_get_block(i - 1);
+            if (!prev || memcmp(b->prev_hash, prev->block_hash, 32) != 0) {
                 kprintf("[FAIL] Block #%u previous hash link broken!\n", i);
                 return 0;
             }
@@ -546,8 +750,16 @@ void coin_dump_chain(void) {
     kprintf("Height: #%u | Circulating Supply: %lu KIT | Mempool: %u TXs | Halving in: %u blks\n\n",
             chain_height, coin_get_circulating_supply(), mempool_count, coin_get_blocks_until_halving());
 
+    uint32_t start_skip = (chain_height > 12) ? 4 : chain_height;
+    uint32_t resume_idx = (chain_height > 12) ? chain_height - 6 : chain_height;
+
     for (uint32_t i = 0; i < chain_height; i++) {
-        struct coin_block *b = &chain[i];
+        if (chain_height > 12 && i == start_skip) {
+            kprintf("\n  ... [%u intermediate blocks omitted for brevity] ...\n\n", resume_idx - start_skip);
+            i = resume_idx;
+        }
+        struct coin_block *b = coin_get_block(i);
+        if (!b) continue;
         char b_hash[65], p_hash[65];
         sha256_to_hex(b->block_hash, b_hash);
         sha256_to_hex(b->prev_hash, p_hash);
@@ -588,7 +800,11 @@ void coin_dump_block(uint32_t height) {
         return;
     }
 
-    struct coin_block *b = &chain[height];
+    struct coin_block *b = coin_get_block(height);
+    if (!b) {
+        kprintf("[KitKoin:ERR] Unable to load block #%u from memory!\n", height);
+        return;
+    }
     char b_hash[65], p_hash[65], m_root[65];
     sha256_to_hex(b->block_hash, b_hash);
     sha256_to_hex(b->prev_hash, p_hash);
@@ -643,19 +859,21 @@ void coin_dump_tx(const char *hex_prefix) {
 
     /* 2. Check Blocks */
     for (uint32_t b = 0; b < chain_height; b++) {
-        for (uint32_t t = 0; t < chain[b].tx_count; t++) {
+        struct coin_block *blk = coin_get_block(b);
+        if (!blk) continue;
+        for (uint32_t t = 0; t < blk->tx_count; t++) {
             char tx_h[65];
-            sha256_to_hex(chain[b].txs[t].tx_hash, tx_h);
+            sha256_to_hex(blk->txs[t].tx_hash, tx_h);
             if (strncmp(tx_h, hex_prefix, strlen(hex_prefix)) == 0) {
                 uint32_t confs = chain_height - b;
                 kprintf("\n[KitKoin:TX Found in Block #%u - CONFIRMED]\n", b);
                 kprintf("  TxID:          %s\n", tx_h);
                 kprintf("  Block Height:  #%u (%u confirmations)\n", b, confs);
-                kprintf("  Sender:        %s\n", chain[b].txs[t].sender);
-                kprintf("  Recipient:     %s\n", chain[b].txs[t].recipient);
-                kprintf("  Amount:        %lu KIT\n", chain[b].txs[t].amount);
-                kprintf("  Fee:           %lu KIT\n", chain[b].txs[t].fee);
-                kprintf("  Timestamp:     %lu ticks\n\n", chain[b].txs[t].timestamp);
+                kprintf("  Sender:        %s\n", blk->txs[t].sender);
+                kprintf("  Recipient:     %s\n", blk->txs[t].recipient);
+                kprintf("  Amount:        %lu KIT\n", blk->txs[t].amount);
+                kprintf("  Fee:           %lu KIT\n", blk->txs[t].fee);
+                kprintf("  Timestamp:     %lu ticks\n\n", blk->txs[t].timestamp);
                 found = 1;
             }
         }
@@ -678,8 +896,10 @@ void coin_dump_history(const char *address) {
 
     int count = 0;
     for (uint32_t b = 0; b < chain_height; b++) {
-        for (uint32_t t = 0; t < chain[b].tx_count; t++) {
-            struct coin_tx *tx = &chain[b].txs[t];
+        struct coin_block *blk = coin_get_block(b);
+        if (!blk) continue;
+        for (uint32_t t = 0; t < blk->tx_count; t++) {
+            struct coin_tx *tx = &blk->txs[t];
             int is_recip = (strcmp(tx->recipient, address) == 0);
             int is_sender = (strcmp(tx->sender, address) == 0);
 
@@ -730,11 +950,7 @@ static int automine_task_pid = -1;
 static void automine_worker(void) {
     kprintf("\n[KitKoin:AutoMiner] Background miner thread started (PID: %d)!\n", automine_task_pid);
     while (automine_active) {
-        if (chain_height < COIN_MAX_CHAIN_LEN) {
-            coin_mine_block();
-        } else {
-            break;
-        }
+        coin_mine_block();
 
         /* Sleep 4 seconds between blocks or until interrupted */
         for (int i = 0; i < 40 && automine_active; i++) {
@@ -817,7 +1033,14 @@ int coin_save(void) {
     disk_io_buffer.my_wallet_index = my_wallet_index;
     memcpy(disk_io_buffer.wallets, wallets, sizeof(wallets));
     disk_io_buffer.chain_height = chain_height;
-    memcpy(disk_io_buffer.chain, chain, sizeof(chain));
+    memset(disk_io_buffer.chain, 0, sizeof(disk_io_buffer.chain));
+    uint32_t save_count = (chain_height <= COIN_DISK_SAVED_BLOCKS) ? chain_height : COIN_DISK_SAVED_BLOCKS;
+    for (uint32_t i = 0; i < save_count; i++) {
+        struct coin_block *blk = coin_get_block(i);
+        if (blk) {
+            memcpy(&disk_io_buffer.chain[i], blk, sizeof(struct coin_block));
+        }
+    }
     disk_io_buffer.mempool_count = mempool_count;
     memcpy(disk_io_buffer.mempool, mempool, sizeof(mempool));
 
@@ -852,7 +1075,11 @@ int coin_load(void) {
         return -1;
     }
 
-    if (disk_io_buffer.magic != COIN_DISK_MAGIC || disk_io_buffer.version != COIN_DISK_VERSION) {
+    if (disk_io_buffer.magic != COIN_DISK_MAGIC) {
+        return -1;
+    }
+
+    if (disk_io_buffer.version != COIN_DISK_VERSION) {
         return -1;
     }
 
@@ -870,12 +1097,22 @@ int coin_load(void) {
         return -1;
     }
 
-    wallet_count = disk_io_buffer.wallet_count;
-    my_wallet_index = disk_io_buffer.my_wallet_index;
+    wallet_count = (disk_io_buffer.wallet_count <= COIN_MAX_WALLETS) ? disk_io_buffer.wallet_count : COIN_MAX_WALLETS;
+    my_wallet_index = (disk_io_buffer.my_wallet_index < wallet_count) ? disk_io_buffer.my_wallet_index : 0;
     memcpy(wallets, disk_io_buffer.wallets, sizeof(wallets));
-    chain_height = disk_io_buffer.chain_height;
-    memcpy(chain, disk_io_buffer.chain, sizeof(chain));
-    mempool_count = disk_io_buffer.mempool_count;
+    uint32_t load_count = (disk_io_buffer.chain_height <= COIN_DISK_SAVED_BLOCKS) ? disk_io_buffer.chain_height : COIN_DISK_SAVED_BLOCKS;
+    ensure_chain_capacity(load_count > 64 ? load_count : 64);
+    chain_height = load_count;
+    for (uint32_t i = 0; i < load_count; i++) {
+        struct coin_block *blk = allocate_new_block(i);
+        if (blk) {
+            memcpy(blk, &disk_io_buffer.chain[i], sizeof(struct coin_block));
+            if (i == load_count - 1) {
+                memcpy(last_block_hash, blk->block_hash, 32);
+            }
+        }
+    }
+    mempool_count = (disk_io_buffer.mempool_count <= COIN_MAX_BLOCK_TX) ? disk_io_buffer.mempool_count : 0;
     memcpy(mempool, disk_io_buffer.mempool, sizeof(mempool));
 
     /* Update human-readable wallet.txt in ramfs */
@@ -891,6 +1128,8 @@ int coin_load(void) {
     return 0;
 }
 
+
+
 int coin_faucet(uint64_t amount) {
     if (amount == 0) amount = 1000;
     struct coin_wallet *my_w = coin_get_my_wallet();
@@ -905,33 +1144,50 @@ int coin_faucet(uint64_t amount) {
 }
 
 void coin_init(void) {
-    memset(chain, 0, sizeof(chain));
+    if (chain && chain_capacity > 0) {
+        for (uint32_t i = 0; i < chain_capacity; i++) {
+            if (chain[i]) {
+                kfree(chain[i]);
+                chain[i] = NULL;
+            }
+        }
+        kfree(chain);
+        chain = NULL;
+        chain_capacity = 0;
+    }
+    memset(last_block_hash, 0, 32);
     memset(mempool, 0, sizeof(mempool));
     memset(wallets, 0, sizeof(wallets));
     chain_height = 0;
     mempool_count = 0;
     wallet_count = 0;
 
-    /* 1. Attempt to restore persistent wallet and blockchain from disk */
+    ensure_chain_capacity(64);
+
+    /* Try to restore persistent state from disk if valid */
     if (coin_load() == 0) {
+        kprintf("[+] KitKoin (KIT) Restored from persistent disk storage!\n");
+        kprintf("    Chain Height:          #%u blocks\n", chain_height);
         struct coin_wallet *my_w = coin_get_my_wallet();
-        kprintf("[+] KitKoin: Restored persistent wallet & blockchain from disk storage!\n");
-        kprintf("    Restored Height:  #%u blocks\n", chain_height);
-        kprintf("    Active Wallet:    %s (%s)\n", my_w ? my_w->address : "N/A", my_w ? my_w->label : "Node");
-        kprintf("    Active Balance:   %lu KIT (Preserved across reboot!)\n", my_w ? my_w->balance : 0);
-        kprintf("    Total Wallets:    %u registered\n", wallet_count);
+        if (my_w) {
+            kprintf("    Active Account:        %s (%s, %lu KIT)\n", my_w->address, my_w->label, my_w->balance);
+        }
         return;
     }
 
-    /* 2. Initialize Primary Node Wallet */
+    /* 1. Initialize Primary Node Wallet */
     struct coin_wallet *w0 = coin_create_wallet("PrimaryNode");
     my_wallet_index = 0;
 
-    /* 3. Initialize Second Demo Peer Wallet */
+    /* 2. Initialize Second Demo Peer Wallet */
     coin_create_wallet("WiFiPeerAlice");
 
-    /* 4. Build & Hardcode Genesis Block #0 */
-    struct coin_block *genesis = &chain[0];
+    /* 3. Build & Hardcode Genesis Block #0 */
+    struct coin_block *genesis = allocate_new_block(0);
+    if (!genesis) {
+        kprintf("[KitKoin:ERR] Failed to allocate Genesis Block #0!\n");
+        return;
+    }
     genesis->index = 0;
     genesis->timestamp = 0;
     memset(genesis->prev_hash, 0, 32);
@@ -960,6 +1216,8 @@ void coin_init(void) {
         genesis->nonce++;
     }
 
+    memcpy(last_block_hash, genesis->block_hash, 32);
+
     /* Credit initial reward to primary wallet */
     w0->balance = COIN_INITIAL_REWARD;
     w0->tx_count = 1;
@@ -971,9 +1229,26 @@ void coin_init(void) {
     char gen_hash[65];
     sha256_to_hex(genesis->block_hash, gen_hash);
 
-    kprintf("[+] KitKoin (KIT) Cryptocurrency initialized!\n");
+    kprintf("[+] KitKoin (KIT) Infinite Blockchain initialized!\n");
     kprintf("    Genesis Block #0 Hash: %s\n", gen_hash);
     kprintf("    Primary Node Wallet:   %s (%lu KIT)\n", w0->address, w0->balance);
-    kprintf("    Consensus Parameters:  Halving every %d blocks, %lu Max Supply\n",
+    kprintf("    Consensus Parameters:  Halving every %d blocks, %lu Max Supply (Infinite)\n",
             COIN_HALVING_INTERVAL, COIN_MAX_SUPPLY);
+
+    /* Background autominer off by default (user can start via kitkoin automine on) */
+}
+
+void coin_restart(void) {
+    kprintf("\n[KitKoin:RESTART] Resetting blockchain to fresh Genesis Block #0...\n");
+    coin_automine_stop();
+    timer_sleep_ms(200);
+
+    /* Wipe disk persistence record so reboot/reload doesn't load old blocks */
+    memset(&disk_io_buffer, 0, sizeof(disk_io_buffer));
+    uint32_t total_sectors = (sizeof(struct coin_disk_state) + SECTOR_SIZE - 1) / SECTOR_SIZE;
+    virtio_blk_write(COIN_DISK_START_SECTOR, &disk_io_buffer, total_sectors);
+
+    /* Re-initialize fresh blockchain */
+    coin_init();
+    kprintf("[✔] Blockchain restart complete! Fresh Genesis Block #0 active, autominer running.\n");
 }

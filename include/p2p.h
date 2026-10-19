@@ -37,6 +37,7 @@ struct coin_block;
 void p2p_init(void);
 void p2p_broadcast_tx(const struct coin_tx *tx);
 void p2p_broadcast_block(const struct coin_block *b);
+void p2p_broadcast_block_quiet(const struct coin_block *b);
 void p2p_dump_status(void);
 int  p2p_get_peer_count(void);
 int  p2p_add_peer(const char *node_id, const char *address, uint32_t port);

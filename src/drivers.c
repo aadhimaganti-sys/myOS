@@ -65,7 +65,12 @@ static void get_blk_stats(char *buf, size_t max_len) {
 }
 
 static void get_fb_stats(char *buf, size_t max_len) {
-    snprintf(buf, max_len, "Res: 640x480x32bpp XRGB | VRAM: 1200 KB | DMA Scanout via fw_cfg");
+    struct framebuffer *fb = fb_get_info();
+    uint32_t w = fb ? fb->width : 1024;
+    uint32_t h = fb ? fb->height : 768;
+    uint32_t vram_kb = (w * h * 4) / 1024;
+    snprintf(buf, max_len, "Res: %ux%ux32bpp XRGB | VRAM: %u KB | DMA Scanout via fw_cfg",
+             w, h, vram_kb);
 }
 
 static void get_sched_stats(char *buf, size_t max_len) {
@@ -192,8 +197,9 @@ static int test_gpu(char *buf, size_t max) {
     __asm__ volatile("dmb sy" ::: "memory");
     int match = (fb->buffer[0] == 0x00FF00AA);
     fb->buffer[0] = old_pix;
-    snprintf(buf, max, "Res: %ux%ux%ubpp | VRAM: 1200 KB | DMA Scanout Verified: %s",
-             fb->width, fb->height, fb->bpp, match ? "PASS" : "FAIL");
+    uint32_t vram_kb = (fb->width * fb->height * 4) / 1024;
+    snprintf(buf, max, "Res: %ux%ux%ubpp | VRAM: %u KB | DMA Scanout Verified: %s",
+             fb->width, fb->height, fb->bpp, vram_kb, match ? "PASS" : "FAIL");
     return match ? 0 : -2;
 }
 
@@ -332,7 +338,7 @@ static struct driver_info s_drivers[] = {
         .version = "VirtIO Input v1.0",
         .status = DRIVER_ACTIVE,
         .status_str = "TRACKING",
-        .description = "Absolute pointer driver scaling coordinates (0..32767) directly to 640x480 resolution.",
+        .description = "Absolute pointer driver scaling coordinates (0..32767) dynamically to display resolution.",
         .get_stats = get_mouse_stats,
         .self_test = test_mou,
         .last_test_result = "Not Tested",

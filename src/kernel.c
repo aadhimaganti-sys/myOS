@@ -10,6 +10,7 @@
 #include "virtio.h"
 #include "fb.h"
 #include "ramfs.h"
+#include "lang.h"
 #include "syscall.h"
 #include "shell.h"
 #include "agy.h"
@@ -160,7 +161,7 @@ void kernel_main(void) {
 
     /* 3. Initialize Framebuffer Graphics Subsystem */
     kprintf("\n--- Initializing Framebuffer Graphics Engine ---\n");
-    fb_init(640, 480);
+    fb_init(1024, 768);
     fb_render_test_screen();
 
     /* 4. Initialize Preemptive Multitasking Scheduler */
@@ -187,6 +188,7 @@ void kernel_main(void) {
 
     /* 1. Initialize In-Memory RAM Filesystem (RAMFS) */
     ramfs_init();
+    lang_init();
 
     /* 2. Initialize Google Antigravity Multi-Agent Subsystem */
     agy_init();
@@ -204,11 +206,7 @@ void kernel_main(void) {
     shell_init();
 
     kprintf("\n[SUCCESS] Operating System Fully Booted and Operational!\n");
-    kprintf("Entering Graphical Desktop Environment (myOS Desktop)...\n");
+    kprintf("Auto-Terminal ready. Press '.' at any time to switch to Graphical Desktop (GUI).\n");
 
-    gui_run_interactive();
-
-    /* Fallback to CLI shell if GUI desktop is exited */
-    kprintf("Falling back to CLI shell...\n");
     shell_run();
 }

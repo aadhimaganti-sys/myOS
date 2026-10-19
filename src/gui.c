@@ -233,18 +233,95 @@ void gui_handle_key(struct key_event *ev) {
         return;
     }
 
+/* Terminal Command History State */
+static int gui_history_browse_idx = -1;
+static char gui_saved_edit_line[SHELL_MAX_LINE];
+
     /* Terminal Window Input Handling */
     struct wm_window *w_term = wm_get_window(WIN_TERMINAL);
     if (w_term && w_term->is_focused && w_term->is_visible) {
+        /* Command History: Up Arrow / Ctrl+P */
+        if (ev->scancode == KEY_UP || ev->ascii == 0x10) {
+            int hcount = shell_history_count();
+            if (hcount > 0) {
+                if (gui_history_browse_idx == -1) {
+                    strncpy(gui_saved_edit_line, gui_line_buf, sizeof(gui_saved_edit_line) - 1);
+                    gui_saved_edit_line[sizeof(gui_saved_edit_line) - 1] = '\0';
+                    gui_history_browse_idx = hcount - 1;
+                } else if (gui_history_browse_idx > 0) {
+                    gui_history_browse_idx--;
+                }
+                while (gui_line_pos > 0) {
+                    gui_line_pos--;
+                    gui_terminal_putc('\b');
+                }
+                const char *h = shell_history_get(gui_history_browse_idx);
+                if (h) {
+                    gui_line_pos = 0;
+                    while (h[gui_line_pos] && gui_line_pos < (int)sizeof(gui_line_buf) - 1) {
+                        gui_line_buf[gui_line_pos] = h[gui_line_pos];
+                        gui_terminal_putc(h[gui_line_pos]);
+                        gui_line_pos++;
+                    }
+                    gui_line_buf[gui_line_pos] = '\0';
+                }
+            }
+            return;
+        }
+
+        /* Command History: Down Arrow / Ctrl+N */
+        if (ev->scancode == KEY_DOWN || ev->ascii == 0x0E) {
+            int hcount = shell_history_count();
+            if (gui_history_browse_idx != -1) {
+                if (gui_history_browse_idx < hcount - 1) {
+                    gui_history_browse_idx++;
+                    while (gui_line_pos > 0) {
+                        gui_line_pos--;
+                        gui_terminal_putc('\b');
+                    }
+                    const char *h = shell_history_get(gui_history_browse_idx);
+                    if (h) {
+                        gui_line_pos = 0;
+                        while (h[gui_line_pos] && gui_line_pos < (int)sizeof(gui_line_buf) - 1) {
+                            gui_line_buf[gui_line_pos] = h[gui_line_pos];
+                            gui_terminal_putc(h[gui_line_pos]);
+                            gui_line_pos++;
+                        }
+                        gui_line_buf[gui_line_pos] = '\0';
+                    }
+                } else {
+                    gui_history_browse_idx = -1;
+                    while (gui_line_pos > 0) {
+                        gui_line_pos--;
+                        gui_terminal_putc('\b');
+                    }
+                    gui_line_pos = 0;
+                    while (gui_saved_edit_line[gui_line_pos] && gui_line_pos < (int)sizeof(gui_line_buf) - 1) {
+                        gui_line_buf[gui_line_pos] = gui_saved_edit_line[gui_line_pos];
+                        gui_terminal_putc(gui_saved_edit_line[gui_line_pos]);
+                        gui_line_pos++;
+                    }
+                    gui_line_buf[gui_line_pos] = '\0';
+                }
+            }
+            return;
+        }
+
         if (ev->scancode == KEY_ENTER || ev->ascii == '\r' || ev->ascii == '\n') {
             gui_terminal_putc('\n');
             gui_line_buf[gui_line_pos] = '\0';
+            gui_history_browse_idx = -1;
+            gui_saved_edit_line[0] = '\0';
             if (gui_line_pos > 0) {
                 if (strcmp(gui_line_buf, "exit") == 0 || strcmp(gui_line_buf, "quit") == 0) {
                     gui_exit_requested = 1;
                     return;
                 }
-                shell_execute(gui_line_buf);
+                int exp = shell_expand_history(gui_line_buf, sizeof(gui_line_buf));
+                if (exp >= 0) {
+                    shell_history_add(gui_line_buf);
+                    shell_execute(gui_line_buf);
+                }
             }
             gui_line_pos = 0;
             gui_line_buf[0] = '\0';

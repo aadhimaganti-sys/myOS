@@ -17,10 +17,16 @@
 #include "drivers.h"
 #include "coin.h"
 #include "p2p.h"
+#include "sha256.h"
 
 /* Forward declarations */
 static void cmd_help(int argc, char **argv);
 static void cmd_kitkoin(int argc, char **argv);
+static void cmd_account(int argc, char **argv);
+static void cmd_switch(int argc, char **argv);
+static void cmd_balance(int argc, char **argv);
+static void cmd_userdel(int argc, char **argv);
+static void cmd_sudo(int argc, char **argv);
 static void cmd_drivers(int argc, char **argv);
 static void cmd_atlas(int argc, char **argv);
 static void cmd_agy(int argc, char **argv);
@@ -46,6 +52,7 @@ static void cmd_ps(int argc, char **argv);
 static void cmd_yield(int argc, char **argv);
 static void cmd_svc(int argc, char **argv);
 static void cmd_reboot(int argc, char **argv);
+static void cmd_history(int argc, char **argv);
 
 struct shell_cmd {
     const char *name;
@@ -56,6 +63,16 @@ struct shell_cmd {
 static const struct shell_cmd commands[] = {
     {"kitkoin",   "KitKoin (KIT) native P2P cryptocurrency & blockchain",    cmd_kitkoin},
     {"kit",       "Alias for kitkoin cryptocurrency command",                cmd_kitkoin},
+    {"account",   "Manage user accounts & wallets: account [list|new|rm|switch|balance]", cmd_account},
+    {"accounts",  "Alias for account: accounts [list|new|rm|switch|balance]", cmd_account},
+    {"wallet",    "Manage crypto wallets & accounts: wallet [list|new|rm|switch|balance]", cmd_account},
+    {"wallets",   "Alias for wallet command: wallets [list|new|rm|switch|balance]", cmd_account},
+    {"switch",    "Switch active account or wallet: switch <address_or_label>", cmd_switch},
+    {"balance",   "Check balance in KIT: balance [address_or_label]",        cmd_balance},
+    {"userdel",   "Delete user account (requires sudo password): userdel <target>", cmd_userdel},
+    {"deluser",   "Alias for userdel: deluser <target>",                     cmd_userdel},
+    {"rmuser",    "Alias for userdel: rmuser <target>",                      cmd_userdel},
+    {"sudo",      "Execute a command as superuser: sudo <command>",          cmd_sudo},
     {"atlas",     "Atlas Integrated OS Assistant & Subsystem Controller",    cmd_atlas},
     /* Google Antigravity Suite */
     {"agy",       "Display Google Antigravity banner and platform overview", cmd_agy},
@@ -86,6 +103,7 @@ static const struct shell_cmd commands[] = {
     {"yield",     "Cooperatively yield CPU execution",                       cmd_yield},
     {"svc",       "Trigger synchronous system call via svc #0",              cmd_svc},
     {"reboot",    "Reset the system via ARM PSCI firmware call",             cmd_reboot},
+    {"history",   "Display or clear shell command history: history [N|clear]", cmd_history},
     {NULL, NULL, NULL}
 };
 
@@ -144,6 +162,13 @@ static void cmd_help(int argc, char **argv) {
     kprintf("    yield                   - Yield current CPU time-slice\n");
     kprintf("    svc                     - Issue synchronous EL0->EL1 syscall\n");
     kprintf("    reboot                  - Reset VM via ARM PSCI firmware call\n");
+    kprintf("    history                 - View shell command history\n");
+    kprintf("\n  Account & Security:\n");
+    kprintf("    account [list|new|rm|switch|balance] - Manage accounts & wallets\n");
+    kprintf("    switch <target>         - Switch active account/wallet\n");
+    kprintf("    balance [target]        - Check balance in KIT\n");
+    kprintf("    userdel <target>        - Delete user account (requires sudo password: hello)\n");
+    kprintf("    sudo <cmd...>           - Execute command as superuser\n");
     kprintf("\n  Decentralized Cryptocurrency (KitKoin):\n");
     kprintf("    kitkoin (kit)           - Decentralized P2P cryptocurrency dashboard & commands\n");
     kprintf("====================================================================\n\n");
@@ -342,6 +367,442 @@ static void cmd_gui(int argc, char **argv) {
     gui_run_interactive();
 }
 
+/* ====================================================================
+ *                 SUDO AUTHENTICATION & ACCOUNT SUBSYSTEM
+ * ==================================================================== */
+#define SUDO_USER "aadhi"
+
+static int sudo_bypass_auth = 0;
+
+/* SHA-256 hash of "hello": 2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824 */
+static const uint8_t sudo_pass_hash[32] = {
+    0x2c, 0xf2, 0x4d, 0xba, 0x5f, 0xb0, 0xa3, 0x0e,
+    0x26, 0xe8, 0x3b, 0x2a, 0xc5, 0xb9, 0xe2, 0x9e,
+    0x1b, 0x16, 0x1e, 0x5c, 0x1f, 0xa7, 0x42, 0x5e,
+    0x73, 0x04, 0x33, 0x62, 0x93, 0x8b, 0x98, 0x24
+};
+
+static int shell_read_password(char *buf, size_t max_len) {
+    size_t pos = 0;
+    buf[0] = '\0';
+
+    while (1) {
+        input_poll();
+        int mx = 0, my = 0, mbtns = 0;
+        input_get_mouse(&mx, &my, &mbtns);
+        wm_handle_mouse(mx, my, mbtns);
+
+        struct key_event ev;
+        int has_event = keyboard_poll(&ev);
+        if (!has_event) {
+            gui_refresh();
+            task_yield();
+            continue;
+        }
+
+        wm_keyboard_set_active_key(ev.scancode, ev.pressed);
+        if (!ev.pressed) {
+            gui_refresh();
+            continue;
+        }
+
+        /* Enter / Return */
+        if (ev.scancode == KEY_ENTER || ev.ascii == '\r' || ev.ascii == '\n') {
+            uart_putc('\n');
+            gui_terminal_putc('\n');
+            buf[pos] = '\0';
+            gui_refresh();
+            return (int)pos;
+        }
+
+        /* Backspace / Delete */
+        if (ev.scancode == KEY_BACKSPACE || ev.ascii == '\b' || ev.ascii == 0x7F) {
+            if (pos > 0) {
+                pos--;
+                buf[pos] = '\0';
+                uart_puts("\b \b");
+                gui_terminal_putc('\b');
+                gui_refresh();
+            }
+            continue;
+        }
+
+        /* Ctrl+C */
+        if (ev.ascii == 0x03) {
+            uart_puts("^C\n");
+            gui_terminal_puts("^C\n");
+            buf[0] = '\0';
+            gui_refresh();
+            return -1;
+        }
+
+        /* Printable Characters */
+        if (ev.ascii >= 32 && ev.ascii <= 126) {
+            if (pos + 1 < max_len) {
+                buf[pos++] = ev.ascii;
+                buf[pos] = '\0';
+                uart_putc('*');
+                gui_terminal_putc('*');
+                gui_refresh();
+            }
+        }
+    }
+}
+
+static int shell_sudo_auth(void) {
+    if (sudo_bypass_auth) {
+        return 0;
+    }
+
+    char pw_buf[64];
+    for (int attempt = 1; attempt <= 3; attempt++) {
+        kprintf("[sudo] password for %s: ", SUDO_USER);
+        int len = shell_read_password(pw_buf, sizeof(pw_buf));
+        if (len < 0) {
+            return -1;
+        }
+
+        uint8_t hash[32];
+        sha256_hash((const uint8_t *)pw_buf, strlen(pw_buf), hash);
+
+        if (strcmp(pw_buf, "hello") == 0 || memcmp(hash, sudo_pass_hash, 32) == 0) {
+            return 0;
+        }
+
+        if (attempt < 3) {
+            kprintf("Sorry, try again.\n");
+        }
+    }
+
+    kprintf("sudo: 3 incorrect password attempts\n");
+    return -1;
+}
+
+static void sudo_remove_wallet(const char *target) {
+    if (!target || target[0] == '\0') {
+        kprintf("Usage: account rm <address_or_label>\n");
+        return;
+    }
+
+    if (shell_sudo_auth() != 0) {
+        kprintf("[KitKoin:AUTH] Access denied: account '%s' was NOT deleted.\n", target);
+        return;
+    }
+
+    coin_remove_wallet(target);
+}
+
+static void do_switch_wallet(const char *target) {
+    if (!target || target[0] == '\0') {
+        kprintf("Usage: switch <address_or_label>\n");
+        return;
+    }
+
+    if (shell_sudo_auth() != 0) {
+        kprintf("[KitKoin:AUTH] Access denied: account switch to '%s' cancelled.\n", target);
+        return;
+    }
+
+    if (coin_switch_wallet(target) == 0) {
+        struct coin_wallet *w = coin_get_my_wallet();
+        kprintf("[+] Successfully switched active node wallet to %s (%s) | Balance: %lu KIT\n",
+                w->address, w->label, w->balance);
+    } else {
+        kprintf("[KitKoin:ERR] Wallet address or label '%s' not found!\n", target);
+    }
+}
+
+static void cmd_account(int argc, char **argv) {
+    if (argc < 2 || strcmp(argv[1], "list") == 0 || strcmp(argv[1], "ls") == 0) {
+        coin_dump_wallets();
+        return;
+    }
+
+    if (strcmp(argv[1], "new") == 0 || strcmp(argv[1], "create") == 0 || strcmp(argv[1], "add") == 0) {
+        const char *label = (argc >= 3) ? argv[2] : "UserWallet";
+        struct coin_wallet *w = coin_create_wallet(label);
+        if (w) {
+            kprintf("[+] Generated new account/wallet!\n");
+            kprintf("    Label:   %s\n", w->label);
+            kprintf("    Address: %s\n", w->address);
+            kprintf("    Balance: 0 KIT\n");
+            kprintf("    Tip: Use 'switch %s' or 'account switch %s' to activate.\n", w->label, w->label);
+        }
+        return;
+    }
+
+    if (strcmp(argv[1], "switch") == 0 || strcmp(argv[1], "select") == 0 || strcmp(argv[1], "use") == 0) {
+        if (argc < 3) {
+            kprintf("Usage: account switch <address_or_label>\n");
+            return;
+        }
+        do_switch_wallet(argv[2]);
+        return;
+    }
+
+    if (strcmp(argv[1], "rm") == 0 || strcmp(argv[1], "remove") == 0 ||
+        strcmp(argv[1], "delete") == 0 || strcmp(argv[1], "del") == 0) {
+        if (argc < 3) {
+            kprintf("Usage: account rm <address_or_label>\n");
+            return;
+        }
+        sudo_remove_wallet(argv[2]);
+        return;
+    }
+
+    if (strcmp(argv[1], "balance") == 0 || strcmp(argv[1], "bal") == 0) {
+        if (argc >= 3) {
+            uint64_t bal = coin_get_balance(argv[2]);
+            kprintf("Balance of %s: %lu KIT\n", argv[2], bal);
+        } else {
+            struct coin_wallet *my_w = coin_get_my_wallet();
+            kprintf("Active Wallet (%s | %s): %lu KIT\n", my_w->address, my_w->label, my_w->balance);
+        }
+        return;
+    }
+
+    kprintf("Usage:\n");
+    kprintf("  account                           - List registered accounts & active selection\n");
+    kprintf("  account new [label]               - Create new account/wallet\n");
+    kprintf("  account rm <address_or_label>     - Delete account (requires sudo password: hello)\n");
+    kprintf("  account switch <address_or_label> - Switch active account\n");
+    kprintf("  account balance [address]         - Check account balance in KIT\n");
+}
+
+static void cmd_switch(int argc, char **argv) {
+    if (argc < 2) {
+        kprintf("Usage: switch <address_or_label>\n");
+        return;
+    }
+    do_switch_wallet(argv[1]);
+}
+
+static void cmd_balance(int argc, char **argv) {
+    if (argc >= 2) {
+        uint64_t bal = coin_get_balance(argv[1]);
+        kprintf("Balance of %s: %lu KIT\n", argv[1], bal);
+    } else {
+        struct coin_wallet *my_w = coin_get_my_wallet();
+        kprintf("Active Wallet (%s | %s): %lu KIT\n", my_w->address, my_w->label, my_w->balance);
+    }
+}
+
+static void cmd_userdel(int argc, char **argv) {
+    if (argc < 2) {
+        kprintf("Usage: userdel <account_or_wallet>\n");
+        return;
+    }
+    sudo_remove_wallet(argv[1]);
+}
+
+static void cmd_sudo(int argc, char **argv) {
+    if (argc < 2) {
+        kprintf("Usage: sudo <command> [args...]\n");
+        return;
+    }
+    if (shell_sudo_auth() != 0) {
+        kprintf("sudo: authentication failure\n");
+        return;
+    }
+
+    sudo_bypass_auth = 1;
+
+    char subcmd_line[SHELL_MAX_LINE];
+    subcmd_line[0] = '\0';
+    size_t cur = 0;
+    for (int i = 1; i < argc; i++) {
+        size_t len = strlen(argv[i]);
+        if (cur + len + 2 < sizeof(subcmd_line)) {
+            memcpy(&subcmd_line[cur], argv[i], len);
+            cur += len;
+            if (i + 1 < argc) subcmd_line[cur++] = ' ';
+        }
+    }
+    subcmd_line[cur] = '\0';
+
+    shell_execute(subcmd_line);
+    sudo_bypass_auth = 0;
+}
+
+/* ====================================================================
+ *                 COMMAND HISTORY SUBSYSTEM
+ * ==================================================================== */
+static char history_entries[SHELL_MAX_HISTORY][SHELL_MAX_LINE];
+static int history_count = 0;
+static int history_start_num = 1; /* 1-based running index */
+
+void shell_history_add(const char *cmd) {
+    if (!cmd) return;
+    /* Skip leading whitespace */
+    while (*cmd == ' ' || *cmd == '\t') cmd++;
+    if (*cmd == '\0') return;
+
+    /* Do not store consecutive duplicates */
+    if (history_count > 0 && strcmp(history_entries[history_count - 1], cmd) == 0) {
+        return;
+    }
+
+    if (history_count < SHELL_MAX_HISTORY) {
+        strncpy(history_entries[history_count], cmd, SHELL_MAX_LINE - 1);
+        history_entries[history_count][SHELL_MAX_LINE - 1] = '\0';
+        history_count++;
+    } else {
+        /* Shift older entries left */
+        for (int i = 0; i < SHELL_MAX_HISTORY - 1; i++) {
+            memcpy(history_entries[i], history_entries[i + 1], SHELL_MAX_LINE);
+        }
+        strncpy(history_entries[SHELL_MAX_HISTORY - 1], cmd, SHELL_MAX_LINE - 1);
+        history_entries[SHELL_MAX_HISTORY - 1][SHELL_MAX_LINE - 1] = '\0';
+        history_start_num++;
+    }
+
+    /* Keep human-readable history.txt in ramfs */
+    char hbuf[RAMFS_MAX_SIZE];
+    int offset = 0;
+    offset += snprintf(hbuf + offset, sizeof(hbuf) - offset, "=== Shell Command History ===\n");
+    for (int i = 0; i < history_count && offset < (int)sizeof(hbuf) - 64; i++) {
+        offset += snprintf(hbuf + offset, sizeof(hbuf) - offset, "%4d  %s\n",
+                           history_start_num + i, history_entries[i]);
+    }
+    ramfs_create("history.txt");
+    ramfs_write("history.txt", hbuf, (size_t)offset);
+}
+
+int shell_history_count(void) {
+    return history_count;
+}
+
+const char *shell_history_get(int index) {
+    if (index < 0 || index >= history_count) {
+        return NULL;
+    }
+    return history_entries[index];
+}
+
+const char *shell_history_find_prefix(const char *prefix) {
+    if (!prefix || *prefix == '\0') return NULL;
+    size_t len = strlen(prefix);
+    for (int i = history_count - 1; i >= 0; i--) {
+        if (strncmp(history_entries[i], prefix, len) == 0) {
+            return history_entries[i];
+        }
+    }
+    return NULL;
+}
+
+void shell_history_clear(void) {
+    history_count = 0;
+    history_start_num = 1;
+    ramfs_delete("history.txt");
+}
+
+void shell_history_dump(int limit) {
+    if (history_count == 0) {
+        kprintf("[*] Command history is empty. Run commands to populate history.\n");
+        return;
+    }
+    int start = 0;
+    if (limit > 0 && limit < history_count) {
+        start = history_count - limit;
+    }
+    kprintf("\n  #    Command\n");
+    kprintf("----+----------------------------------------------------\n");
+    for (int i = start; i < history_count; i++) {
+        kprintf(" %3d  %s\n", history_start_num + i, history_entries[i]);
+    }
+    kprintf("----+----------------------------------------------------\n");
+    kprintf("Total: %d command%s (Recall with UP/DOWN arrows, !n, or !!)\n\n",
+            history_count, history_count == 1 ? "" : "s");
+}
+
+int shell_expand_history(char *line, size_t max_len) {
+    if (!line || line[0] != '!' || line[1] == '\0') {
+        return 0;
+    }
+
+    const char *target = NULL;
+    if (line[1] == '!') {
+        /* !! -> last command */
+        if (history_count == 0) {
+            kprintf("agy: !!: event not found\n");
+            return -1;
+        }
+        target = shell_history_get(history_count - 1);
+    } else if (line[1] >= '0' && line[1] <= '9') {
+        /* !n -> command number n */
+        int num = (int)parse_dec(&line[1]);
+        int idx = num - history_start_num;
+        target = shell_history_get(idx);
+        if (!target) {
+            kprintf("agy: !%d: event not found\n", num);
+            return -1;
+        }
+    } else if (line[1] == '-' && line[2] >= '0' && line[2] <= '9') {
+        /* !-n -> relative backwards */
+        int rel = (int)parse_dec(&line[2]);
+        int idx = history_count - rel;
+        target = shell_history_get(idx);
+        if (!target) {
+            kprintf("agy: !-%d: event not found\n", rel);
+            return -1;
+        }
+    } else {
+        /* !prefix */
+        target = shell_history_find_prefix(&line[1]);
+        if (!target) {
+            kprintf("agy: !%s: event not found\n", &line[1]);
+            return -1;
+        }
+    }
+
+    if (target) {
+        kprintf("%s\n", target);
+        gui_terminal_puts(target);
+        gui_terminal_putc('\n');
+        strncpy(line, target, max_len - 1);
+        line[max_len - 1] = '\0';
+        return 1;
+    }
+    return -1;
+}
+
+static void cmd_history(int argc, char **argv) {
+    if (argc >= 2) {
+        if (strcmp(argv[1], "clear") == 0 || strcmp(argv[1], "-c") == 0) {
+            shell_history_clear();
+            kprintf("[+] Command history cleared.\n");
+            return;
+        } else if (strcmp(argv[1], "run") == 0 && argc >= 3) {
+            int num = (int)parse_dec(argv[2]);
+            int idx = num - history_start_num;
+            const char *cmd = shell_history_get(idx);
+            if (cmd) {
+                char run_buf[SHELL_MAX_LINE];
+                strncpy(run_buf, cmd, sizeof(run_buf) - 1);
+                run_buf[sizeof(run_buf) - 1] = '\0';
+                kprintf("[!] Re-running #%d: %s\n", num, run_buf);
+                shell_history_add(run_buf);
+                shell_execute(run_buf);
+            } else {
+                kprintf("[ERR] History entry #%d not found! Type 'history' to view entries.\n", num);
+            }
+            return;
+        } else if (argv[1][0] >= '0' && argv[1][0] <= '9') {
+            int limit = (int)parse_dec(argv[1]);
+            shell_history_dump(limit);
+            return;
+        } else {
+            kprintf("Usage:\n");
+            kprintf("  history         - Display command history list\n");
+            kprintf("  history <N>     - Display last N commands\n");
+            kprintf("  history run <N> - Re-execute command #N from history\n");
+            kprintf("  history clear   - Clear command history\n");
+            return;
+        }
+    }
+    shell_history_dump(0);
+}
+
 static void cmd_kitkoin(int argc, char **argv) {
     if (argc < 2 || strcmp(argv[1], "status") == 0) {
         struct coin_wallet *my_w = coin_get_my_wallet();
@@ -371,8 +832,10 @@ static void cmd_kitkoin(int argc, char **argv) {
         kprintf("Available KitKoin Commands:\n");
         kprintf("  kitkoin wallet                   - List all registered wallets & active selection\n");
         kprintf("  kitkoin newwallet [label]        - Cryptographically generate a new wallet address\n");
+        kprintf("  kitkoin rmwallet <address>       - Delete a wallet account (requires sudo password: hello)\n");
         kprintf("  kitkoin switch <address>         - Switch active mining/spending node wallet\n");
         kprintf("  kitkoin balance [address]        - Check balance in KIT\n");
+        kprintf("  kitkoin restart                  - Reset/restart blockchain ledger to Genesis state\n");
         kprintf("  kitkoin send <to> <amt> [fee]    - Transfer KIT to another address with optional fee\n");
         kprintf("  kitkoin mine [count]             - Run CPU Proof-of-Work to mine 1 or N blocks\n");
         kprintf("  kitkoin automine [on|off|status] - Multi-tasking background CPU mining worker\n");
@@ -391,7 +854,24 @@ static void cmd_kitkoin(int argc, char **argv) {
         return;
     }
 
-    if (strcmp(argv[1], "wallet") == 0 || strcmp(argv[1], "wallets") == 0) {
+    if (strcmp(argv[1], "wallet") == 0 || strcmp(argv[1], "wallets") == 0 ||
+        strcmp(argv[1], "account") == 0 || strcmp(argv[1], "accounts") == 0) {
+        if (argc >= 3 && (strcmp(argv[2], "rm") == 0 || strcmp(argv[2], "remove") == 0 ||
+                          strcmp(argv[2], "delete") == 0 || strcmp(argv[2], "del") == 0)) {
+            if (argc < 4) {
+                kprintf("Usage: kitkoin account rm <address_or_label>\n");
+            } else {
+                sudo_remove_wallet(argv[3]);
+            }
+            return;
+        } else if (argc >= 3 && (strcmp(argv[2], "switch") == 0 || strcmp(argv[2], "select") == 0)) {
+            if (argc < 4) {
+                kprintf("Usage: kitkoin account switch <address_or_label>\n");
+            } else {
+                do_switch_wallet(argv[3]);
+            }
+            return;
+        }
         coin_dump_wallets();
     } else if (strcmp(argv[1], "newwallet") == 0 || strcmp(argv[1], "new") == 0) {
         const char *label = (argc >= 3) ? argv[2] : "UserWallet";
@@ -401,20 +881,33 @@ static void cmd_kitkoin(int argc, char **argv) {
             kprintf("    Label:   %s\n", w->label);
             kprintf("    Address: %s\n", w->address);
             kprintf("    Balance: 0 KIT\n");
-            kprintf("    Tip: Use 'kitkoin switch %s' to activate.\n", w->address);
+            kprintf("    Tip: Use 'kitkoin switch %s' to activate.\n", w->label);
+        }
+    } else if (strcmp(argv[1], "rmwallet") == 0 || strcmp(argv[1], "delwallet") == 0 ||
+               strcmp(argv[1], "remove") == 0 || strcmp(argv[1], "rm") == 0 ||
+               strcmp(argv[1], "delete") == 0 || strcmp(argv[1], "del") == 0) {
+        if (argc < 3) {
+            kprintf("Usage: kitkoin rmwallet <address_or_label>\n");
+            return;
+        }
+        sudo_remove_wallet(argv[2]);
+    } else if (strcmp(argv[1], "profile") == 0) {
+        if (argc >= 4 && (strcmp(argv[2], "rm") == 0 || strcmp(argv[2], "remove") == 0 ||
+                          strcmp(argv[2], "delete") == 0 || strcmp(argv[2], "del") == 0)) {
+            sudo_remove_wallet(argv[3]);
+        } else if (argc >= 4 && (strcmp(argv[2], "switch") == 0 || strcmp(argv[2], "select") == 0)) {
+            do_switch_wallet(argv[3]);
+        } else {
+            coin_dump_wallets();
         }
     } else if (strcmp(argv[1], "switch") == 0) {
         if (argc < 3) {
-            kprintf("Usage: kitkoin switch <address>\n");
+            kprintf("Usage: kitkoin switch <address_or_label>\n");
             return;
         }
-        if (coin_switch_wallet(argv[2]) == 0) {
-            struct coin_wallet *w = coin_get_my_wallet();
-            kprintf("[+] Successfully switched active node wallet to %s (%s) | Balance: %lu KIT\n",
-                    w->address, w->label, w->balance);
-        } else {
-            kprintf("[KitKoin:ERR] Wallet address '%s' not found!\n", argv[2]);
-        }
+        do_switch_wallet(argv[2]);
+    } else if (strcmp(argv[1], "restart") == 0 || strcmp(argv[1], "reset") == 0) {
+        coin_restart();
     } else if (strcmp(argv[1], "balance") == 0) {
         if (argc >= 3) {
             uint64_t bal = coin_get_balance(argv[2]);
@@ -753,7 +1246,11 @@ static void cmd_touch(int argc, char **argv) {
 
 static void cmd_rm(int argc, char **argv) {
     if (argc < 2) {
-        kprintf("Usage: rm <filename>\n");
+        kprintf("Usage: rm <filename> | rm account <wallet_name>\n");
+        return;
+    }
+    if ((strcmp(argv[1], "account") == 0 || strcmp(argv[1], "wallet") == 0 || strcmp(argv[1], "user") == 0) && argc >= 3) {
+        sudo_remove_wallet(argv[2]);
         return;
     }
     int ret = ramfs_delete(argv[1]);
@@ -821,6 +1318,7 @@ static void cmd_svc(int argc, char **argv) {
 static void cmd_reboot(int argc, char **argv) {
     (void)argc;
     (void)argv;
+    coin_automine_stop();
     kprintf("\n[REBOOT] Issuing PSCI 0.2 SYSTEM_RESET (0x84000009)...\n");
     uart_puts("Goodbye!\n\n");
 
@@ -832,7 +1330,6 @@ static void cmd_reboot(int argc, char **argv) {
         __asm__ volatile("wfe");
     }
 }
-
 void shell_execute(char *line) {
     char *argv[SHELL_MAX_ARGS];
     int argc = 0;
@@ -877,7 +1374,11 @@ void shell_init(void) {
 
 void shell_run(void) {
     char line[SHELL_MAX_LINE];
+    char saved_edit_line[SHELL_MAX_LINE];
     int pos = 0;
+    int history_browse_idx = -1;
+
+    saved_edit_line[0] = '\0';
 
     kprintf("\nGoogle Antigravity OS Shell (AArch64)\n");
     kprintf("Type 'help' or '/help' to view commands, or 'agy' for platform overview.\n\n");
@@ -885,6 +1386,8 @@ void shell_run(void) {
     while (1) {
         kprintf("agy> ");
         pos = 0;
+        history_browse_idx = -1;
+        saved_edit_line[0] = '\0';
         memset(line, 0, sizeof(line));
 
         while (1) {
@@ -926,6 +1429,83 @@ void shell_run(void) {
             if (ev.scancode == KEY_F7) { wm_open_window(WIN_AGENTS);   gui_refresh(); continue; }
             if (ev.scancode == KEY_F8) { wm_open_window(WIN_ABOUT);    gui_refresh(); continue; }
 
+            /* Command History: Up Arrow / Ctrl+P */
+            if (ev.scancode == KEY_UP || ev.ascii == 0x10) {
+                int hcount = shell_history_count();
+                if (hcount > 0) {
+                    if (history_browse_idx == -1) {
+                        strncpy(saved_edit_line, line, sizeof(saved_edit_line) - 1);
+                        saved_edit_line[sizeof(saved_edit_line) - 1] = '\0';
+                        history_browse_idx = hcount - 1;
+                    } else if (history_browse_idx > 0) {
+                        history_browse_idx--;
+                    }
+
+                    while (pos > 0) {
+                        uart_puts("\b \b");
+                        gui_terminal_putc('\b');
+                        pos--;
+                    }
+                    const char *h = shell_history_get(history_browse_idx);
+                    if (h) {
+                        pos = 0;
+                        while (h[pos] && pos < SHELL_MAX_LINE - 1) {
+                            line[pos] = h[pos];
+                            uart_putc(h[pos]);
+                            gui_terminal_putc(h[pos]);
+                            pos++;
+                        }
+                        line[pos] = '\0';
+                    }
+                }
+                gui_refresh();
+                continue;
+            }
+
+            /* Command History: Down Arrow / Ctrl+N */
+            if (ev.scancode == KEY_DOWN || ev.ascii == 0x0E) {
+                int hcount = shell_history_count();
+                if (history_browse_idx != -1) {
+                    if (history_browse_idx < hcount - 1) {
+                        history_browse_idx++;
+                        while (pos > 0) {
+                            uart_puts("\b \b");
+                            gui_terminal_putc('\b');
+                            pos--;
+                        }
+                        const char *h = shell_history_get(history_browse_idx);
+                        if (h) {
+                            pos = 0;
+                            while (h[pos] && pos < SHELL_MAX_LINE - 1) {
+                                line[pos] = h[pos];
+                                uart_putc(h[pos]);
+                                gui_terminal_putc(h[pos]);
+                                pos++;
+                            }
+                            line[pos] = '\0';
+                        }
+                    } else {
+                        /* Reached end of history: restore line user was typing */
+                        history_browse_idx = -1;
+                        while (pos > 0) {
+                            uart_puts("\b \b");
+                            gui_terminal_putc('\b');
+                            pos--;
+                        }
+                        pos = 0;
+                        while (saved_edit_line[pos] && pos < SHELL_MAX_LINE - 1) {
+                            line[pos] = saved_edit_line[pos];
+                            uart_putc(saved_edit_line[pos]);
+                            gui_terminal_putc(saved_edit_line[pos]);
+                            pos++;
+                        }
+                        line[pos] = '\0';
+                    }
+                }
+                gui_refresh();
+                continue;
+            }
+
             char c = ev.ascii;
             if (!c) {
                 gui_refresh();
@@ -937,6 +1517,8 @@ void shell_run(void) {
                 uart_putc('\n');
                 gui_terminal_putc('\n');
                 line[pos] = '\0';
+                history_browse_idx = -1;
+                saved_edit_line[0] = '\0';
                 break;
             }
             /* Backspace / Delete */
@@ -954,6 +1536,8 @@ void shell_run(void) {
                 gui_terminal_puts("^C\n");
                 pos = 0;
                 line[0] = '\0';
+                history_browse_idx = -1;
+                saved_edit_line[0] = '\0';
                 break;
             }
             /* Ctrl+L */
@@ -974,7 +1558,12 @@ void shell_run(void) {
         }
 
         if (pos > 0) {
-            shell_execute(line);
+            line[pos] = '\0';
+            int exp = shell_expand_history(line, sizeof(line));
+            if (exp >= 0) {
+                shell_history_add(line);
+                shell_execute(line);
+            }
             gui_refresh();
         }
     }

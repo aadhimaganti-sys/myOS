@@ -10,6 +10,13 @@ if [ ! -f kernel8.elf ]; then
     make
 fi
 
+# Ensure disk image exists
+if [ ! -f disk.img ]; then
+    echo "[*] Creating persistent storage disk.img (16 MB)..."
+    dd if=/dev/zero of=disk.img bs=1M count=16 status=none
+    printf "myOS-VirtIO-Block-Storage-v1.0" | dd of=disk.img bs=1 count=30 conv=notrunc status=none
+fi
+
 # Detect display environment
 if [ -n "$DISPLAY" ] && xset q >/dev/null 2>&1; then
     echo "[+] GUI display detected ($DISPLAY). Starting QEMU window..."
@@ -21,7 +28,7 @@ if [ -n "$DISPLAY" ] && xset q >/dev/null 2>&1; then
         -device ramfb \
         -device virtio-keyboard-device \
         -device virtio-tablet-device \
-        -drive file=disk.img,if=none,format=raw,id=hd0 \
+        -drive file=disk.img,if=none,format=raw,cache=writethrough,file.locking=off,id=hd0 \
         -device virtio-blk-device,drive=hd0 \
         -kernel kernel8.elf
 else
@@ -38,7 +45,7 @@ else
         -device ramfb \
         -device virtio-keyboard-device \
         -device virtio-tablet-device \
-        -drive file=disk.img,if=none,format=raw,id=hd0 \
+        -drive file=disk.img,if=none,format=raw,cache=writethrough,file.locking=off,id=hd0 \
         -device virtio-blk-device,drive=hd0 \
         -kernel kernel8.elf
 fi
